@@ -31,6 +31,7 @@ OPTIONS:
     --target <ref>      Base reference for diff (default: config.remote/config.main_branch)
     --source <ref>      Tip reference for diff (default: HEAD)
     --commit <sha>      Analyze a specific commit (equivalent to --target sha~1 --source sha)
+    --language <lang>   Force specific language context (e.g., python, sql) for this layer
     --dry-run, -n       Render prompt, check tokens, and exit without calling LLM (Validation Gate)
     --output-format <fmt> JSON or Markdown (default: markdown)
     --debug             Enable verbose debug output
@@ -106,6 +107,7 @@ while [[ $# -gt 0 ]]; do
         --target) CLI_TARGET="$2"; shift 2 ;;
         --source) CLI_SOURCE="$2"; shift 2 ;;
         --commit) CLI_COMMIT="$2"; shift 2 ;;
+        --language) export CODE_LANGUAGE="$2"; shift 2 ;;
         --dry-run|-n) DRY_RUN="true"; shift ;;
         --output-format|-o) OUTPUT_FORMAT="$2"; shift 2 ;;
         --debug) DEBUG="true"; shift ;;

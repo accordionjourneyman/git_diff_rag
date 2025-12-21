@@ -56,6 +56,8 @@ REQUIRED:
 
 OPTIONS:
     --workflow <name>   Workflow to execute (default: pr_review)
+    --commit <sha>      Analyze a specific commit
+    --language <lang>   Force specific language context (e.g., python, sql)
     --dry-run, -n       Render prompt, check tokens, and exit (Validation Gate)
     --output-format     Output format: markdown (default) or json
     --debug             Enable verbose debug output
@@ -126,6 +128,25 @@ Example usage in a recipe:
 ```jinja2
 {% include 'library/security/vulnerabilities.md' %}
 ```
+
+## 🥞 Stacked PR Strategy
+
+Git Diff RAG supports analyzing **Stacked PRs** (dependent branches) efficiently.
+
+### The Workflow
+1.  **Analyze Layer 1 (Base)**:
+    ```bash
+    ./scripts/New-Bundle.sh --repo my-app --target main --source feature-1
+    ```
+2.  **Analyze Layer 2 (The Stack)**:
+    ```bash
+    ./scripts/New-Bundle.sh --repo my-app --target feature-1 --source feature-2 --language python
+    ```
+
+### Why this works
+*   **Context Engine**: The analysis of Layer 1 is stored in the database. When Layer 2 runs, the LLM sees the previous feedback, understanding the stack's evolution.
+*   **Language Isolation**: Use `--language` to focus the LLM on the specific technology of that layer (e.g., SQL for migrations, Python for logic), reducing context noise.
+*   **Composite Caching**: Updating Layer 2 doesn't invalidate the cache for Layer 1.
 
 ## 📂 Architecture
 
