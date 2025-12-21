@@ -4,11 +4,8 @@
 
 A robust, repository-driven "Context Engine" that transforms Git diffs into actionable insights using LLMs. Whether you need a critical code review, a non-technical explanation, or a structured JSON map of changes, Git Diff RAG handles the context management so you can focus on the results.
 
-![CI Status](https://github.com/tiago/git-diff-rag/actions/workflows/ci.yml/badge.svg)
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
-
-> **Note**: This tool was formerly known as `pr_checker`. See [CHANGELOG.md](CHANGELOG.md) for migration instructions.
 
 ## ✨ Key Features
 
@@ -16,11 +13,6 @@ A robust, repository-driven "Context Engine" that transforms Git diffs into acti
 - **Token Guard**: Automatically prunes context (switching to `git diff --stat`) if the token limit is exceeded.
 - **Smart Defaults**: Auto-detects languages in the diff to tailor the review instructions.
 - **Modular Prompts**: Uses Jinja2 templates with reusable macros (`prompts/library`, `prompts/macros`).
-- **Multi-Mode**:
-    - **PR Review**: Standard code review with security scanning.
-    - **Blame Analysis**: Critical post-mortem analysis of specific commits.
-    - **Agentic Map**: Generates a structured JSON map of changes.
-    - **Explain Mode**: Explains changes in simple terms for non-technical stakeholders.
 - **Safety First**:
     - **Secret Scanning**: Pre-flight regex scan for potential secrets in the diff.
     - **Dry Run**: Validate templates and token counts without spending API credits.
