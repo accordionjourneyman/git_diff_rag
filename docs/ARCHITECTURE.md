@@ -20,12 +20,14 @@ graph TD
         SAFETY[Git Safety Checks]
         DIFF[Generate Git Diff]
         SCAN[Secret Scan]
-        GUARD[Token Guard / Pruning]
+        FETCH[Fetch Repo Context]
         RENDER[Render Prompt (Jinja2)]
+        GUARD[Token Guard / Pruning]
     end
 
     subgraph ContextEngine["Context Engine"]
-        HASH[Calc Composite Hash]
+        BASE[Render Base Prompt]
+        HASH[Calc Stable Hash]
         DB[(SQLite Cache)]
         CHECK{Cache Hit?}
     end
@@ -46,9 +48,11 @@ graph TD
     PARSE --> SAFETY
     SAFETY --> DIFF
     DIFF --> SCAN
-    SCAN --> RENDER
+    SCAN --> FETCH
+    FETCH --> RENDER
     RENDER --> GUARD
-    GUARD --> HASH
+    GUARD --> BASE
+    BASE --> HASH
     HASH --> CHECK
     CHECK -- Yes --> RESULT
     CHECK -- No --> GEMINI
@@ -63,16 +67,18 @@ graph TD
 ### 1. Core Pipeline (`scripts/New-Bundle.sh`)
 - **Orchestrator**: Manages the entire flow from CLI input to final output.
 - **Safety**: Enforces clean git state and scans for secrets before processing.
+- **Context Injection**: Fetches the last 3 analyses for the target repository from the database and injects them into the prompt.
 - **Token Guard**: Checks estimated token count against `token_limit`. If exceeded, it prunes the context (switches to `git diff --stat`) to prevent API errors.
 
 ### 2. Prompt Library (`prompts/`)
 - **Jinja2 Templates**: Dynamic templates that adapt to the diff content.
 - **Smart Defaults**: `render_prompt.py` detects languages in the diff and injects them into the prompt context.
-- **Macros**: Reusable components like `_common.md` (Language Triad) and `secret_scan.md`.
+- **Macros**: Reusable components like `_common.md` (Language Triad) and `context_history.md`.
 
 ### 3. Context Engine (`scripts/db_manager.py`)
 - **Caching**: Stores LLM responses in `data/history.sqlite`.
-- **Composite Keys**: Cache lookups use `SHA256(Diff) + SHA256(Prompt) + ModelName`.
+- **Smart Hashing**: Cache keys are calculated from a "Base Prompt" (Template + Diff) *excluding* the dynamic context history. This ensures cache stability.
+- **Repository Memory**: Tracks analysis history per repository (`repo_name`) to provide context for future runs.
 - **Efficiency**: Prevents re-running expensive LLM calls for unchanged inputs.
 
 ### 4. LLM Integration (`scripts/call_gemini.py`)

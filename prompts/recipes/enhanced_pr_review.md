@@ -6,6 +6,8 @@
 
 ## Changes to Review
 
+{% include 'macros/context_history.md' %}
+
 The following changes are submitted for your review:
 
 {{ DIFF_CONTENT }}

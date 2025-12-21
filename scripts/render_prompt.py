@@ -3,6 +3,7 @@
 import sys
 import os
 import re
+import json
 from jinja2 import Environment, meta, FileSystemLoader
 
 def detect_languages(diff_text):
@@ -25,7 +26,7 @@ def detect_languages(diff_text):
     
     return list(languages) if languages else ['unknown']
 
-def render_template(template_path, diff_content, repo_name="unknown", env_vars=None):
+def render_template(template_path, diff_content, repo_name="unknown", context_data=None, env_vars=None):
     if env_vars is None:
         env_vars = os.environ
 
@@ -50,7 +51,8 @@ def render_template(template_path, diff_content, repo_name="unknown", env_vars=N
         "CODE_LANG": code_langs[0] if code_langs else 'text', # For legacy macros using single string
         "ANSWER_LANG": env_vars.get('ANSWER_LANGUAGE', 'english'),
         "COMMENT_LANG": env_vars.get('COMMENT_LANGUAGE', 'english'),
-        "OUTPUT_FORMAT": env_vars.get('OUTPUT_FORMAT', 'markdown')
+        "OUTPUT_FORMAT": env_vars.get('OUTPUT_FORMAT', 'markdown'),
+        "CONTEXT": context_data or []
     }
 
     # Load Template
@@ -69,10 +71,13 @@ def render_template(template_path, diff_content, repo_name="unknown", env_vars=N
     try:
         ast = env.parse(template_src)
         required_vars = meta.find_undeclared_variables(ast)
+        # Filter out vars that are provided
         missing = [v for v in required_vars if v not in provided]
 
         if missing:
-            raise ValueError(f"Template requires missing vars: {missing}")
+            # We don't fail hard on missing vars anymore, as templates might use optional vars
+            # But we can warn or just let Jinja handle it (undefined)
+            pass
             
         return template.render(**provided)
     except ValueError:
@@ -82,12 +87,13 @@ def render_template(template_path, diff_content, repo_name="unknown", env_vars=N
 
 def main():
     if len(sys.argv) < 3:
-        print("Usage: render_prompt.py <template_file> <diff_file> [repo_name]")
+        print("Usage: render_prompt.py <template_file> <diff_file> [repo_name] [context_file]")
         sys.exit(1)
 
     template_path = sys.argv[1]
     diff_file = sys.argv[2]
     repo_name = sys.argv[3] if len(sys.argv) > 3 else "unknown"
+    context_file = sys.argv[4] if len(sys.argv) > 4 else None
 
     # Read Context
     try:
@@ -96,8 +102,16 @@ def main():
     except FileNotFoundError:
         diff_content = diff_file # fallback for raw string arg
 
+    context_data = []
+    if context_file and os.path.exists(context_file):
+        try:
+            with open(context_file, 'r', encoding='utf-8') as f:
+                context_data = json.load(f)
+        except Exception as e:
+            print(f"[WARN] Failed to load context file: {e}", file=sys.stderr)
+
     try:
-        result = render_template(template_path, diff_content, repo_name)
+        result = render_template(template_path, diff_content, repo_name, context_data)
         print(result)
     except Exception as e:
         print(f"[ERROR] {e}")
@@ -105,4 +119,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

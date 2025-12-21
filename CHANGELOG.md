@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.1.0] - 2025-12-21 - Context Awareness & Smart Caching
+
+### Features
+- **Context Injection**: The tool now automatically fetches the last 3 analyses for the target repository and injects them into the prompt. This allows the LLM to maintain consistency and avoid repeating past advice.
+- **Smart Caching**: The caching mechanism has been upgraded to ignore dynamic context history. Cache keys are now calculated from a "Base Prompt" (Template + Diff only), ensuring that growing history doesn't invalidate the cache for identical code changes.
+- **Database Migration**: The SQLite schema now includes a `repo_name` column to support repository-specific context retrieval. Existing databases are automatically migrated.
+
+### Improvements
+- **Prompt Tone**: Updated `role_definition.md` and `style_constructive.md` to enforce a more concise, professional tone and avoid conversational filler.
+- **Runtime Robustness**: `New-Bundle.sh` now robustly detects and uses the correct Python interpreter from the virtual environment.
+- **CLI**: Added support for custom commit ranges via `--target`, `--source`, and `--commit` flags.
+
 ## [2.0.0] - 2024-12-21 - Git Diff RAG
 
 ### ⚠️ BREAKING CHANGES

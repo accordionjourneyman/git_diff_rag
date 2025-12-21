@@ -8,10 +8,12 @@ set -euo pipefail
 # Auto-activate venv
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
-if [[ -f "$PROJECT_ROOT/.venv/bin/activate" ]]; then
-    source "$PROJECT_ROOT/.venv/bin/activate"
-elif [[ -f "$PROJECT_ROOT/venv/bin/activate" ]]; then
-    source "$PROJECT_ROOT/venv/bin/activate"
+PYTHON_CMD="python3"
+
+if [[ -f "$PROJECT_ROOT/.venv/bin/python3" ]]; then
+    PYTHON_CMD="$PROJECT_ROOT/.venv/bin/python3"
+elif [[ -f "$PROJECT_ROOT/venv/bin/python3" ]]; then
+    PYTHON_CMD="$PROJECT_ROOT/venv/bin/python3"
 fi
 
 show_help() {
@@ -235,8 +237,13 @@ fi
 RENDERED_PROMPT="$OUTPUT_DIR/prompt.txt"
 export BUNDLE_PATH="$(realpath "$OUTPUT_DIR")"
 
+# Fetch Context
+CONTEXT_FILE="$OUTPUT_DIR/context.json"
+log "Fetching context for repo: $REPO_NAME"
+"$PYTHON_CMD" scripts/db_manager.py get-context "$REPO_NAME" 3 > "$CONTEXT_FILE"
+
 log "Rendering prompt template: $WF_PROMPT"
-if ! python3 scripts/render_prompt.py "$WF_PROMPT" "$OUTPUT_DIR/diff.patch" "$REPO_NAME" > "$RENDERED_PROMPT"; then
+if ! "$PYTHON_CMD" scripts/render_prompt.py "$WF_PROMPT" "$OUTPUT_DIR/diff.patch" "$REPO_NAME" "$CONTEXT_FILE" > "$RENDERED_PROMPT"; then
     error "Failed to render prompt"
 fi
 
@@ -249,7 +256,7 @@ if [[ "$WF_LLM" == "gemini" ]]; then
     
     export GEMINI_MODEL="$WF_MODEL"
     # Capture output, ignore errors (fallback to no pruning)
-    COUNT_OUTPUT=$(python3 scripts/call_gemini.py --count-tokens "$RENDERED_PROMPT" 2>/dev/null || echo "Error")
+    COUNT_OUTPUT=$("$PYTHON_CMD" scripts/call_gemini.py --count-tokens "$RENDERED_PROMPT" 2>/dev/null || echo "Error")
     
     if [[ "$COUNT_OUTPUT" == *"Estimated Tokens:"* ]]; then
         TOKEN_COUNT=$(echo "$COUNT_OUTPUT" | grep "Estimated Tokens:" | awk '{print $3}')
@@ -269,7 +276,7 @@ if [[ "$WF_LLM" == "gemini" ]]; then
                 echo "$DIFF_CONTENT" > "$OUTPUT_DIR/diff.patch"
                 
                 # Re-render
-                if ! python3 scripts/render_prompt.py "$WF_PROMPT" "$OUTPUT_DIR/diff.patch" "$REPO_NAME" > "$RENDERED_PROMPT"; then
+                if ! "$PYTHON_CMD" scripts/render_prompt.py "$WF_PROMPT" "$OUTPUT_DIR/diff.patch" "$REPO_NAME" "$CONTEXT_FILE" > "$RENDERED_PROMPT"; then
                     error "Failed to re-render prompt after pruning"
                 fi
                 log "Pruned prompt rendered."
@@ -287,19 +294,27 @@ fi
 RESULT_FILE="$OUTPUT_DIR/llm_result.md"
 CACHE_HIT="false"
 
+# Generate Base Prompt for Hashing (Context-Free)
+# This ensures that growing context history doesn't invalidate the cache for the same diff/template.
+BASE_PROMPT_FILE="$OUTPUT_DIR/prompt_base.txt"
+if ! "$PYTHON_CMD" scripts/render_prompt.py "$WF_PROMPT" "$OUTPUT_DIR/diff.patch" "$REPO_NAME" > "$BASE_PROMPT_FILE"; then
+    log "[WARN] Failed to render base prompt for hashing. Using full prompt hash."
+    BASE_PROMPT_FILE="$RENDERED_PROMPT"
+fi
+
 # Calculate Hashes
 if command -v sha256sum &>/dev/null; then
     DIFF_HASH=$(sha256sum "$OUTPUT_DIR/diff.patch" | awk '{print $1}')
-    PROMPT_HASH=$(sha256sum "$RENDERED_PROMPT" | awk '{print $1}')
+    PROMPT_HASH=$(sha256sum "$BASE_PROMPT_FILE" | awk '{print $1}')
 else
     # Fallback for systems without sha256sum (e.g. some macs use shasum -a 256)
     DIFF_HASH=$(shasum -a 256 "$OUTPUT_DIR/diff.patch" | awk '{print $1}')
-    PROMPT_HASH=$(shasum -a 256 "$RENDERED_PROMPT" | awk '{print $1}')
+    PROMPT_HASH=$(shasum -a 256 "$BASE_PROMPT_FILE" | awk '{print $1}')
 fi
 
 if [[ "$DRY_RUN" != "true" ]]; then
     log "Checking cache for DiffHash=${DIFF_HASH:0:8} PromptHash=${PROMPT_HASH:0:8} Model=$WF_MODEL..."
-    if python3 scripts/db_manager.py get "$DIFF_HASH" "$PROMPT_HASH" "$WF_MODEL" > "$RESULT_FILE"; then
+    if "$PYTHON_CMD" scripts/db_manager.py get "$DIFF_HASH" "$PROMPT_HASH" "$WF_MODEL" > "$RESULT_FILE"; then
         log "Cache HIT! Using cached response."
         CACHE_HIT="true"
     else
@@ -317,7 +332,7 @@ if [[ "$DRY_RUN" == "true" ]]; then
     if [[ "$WF_LLM" == "gemini" ]]; then
          log "Estimating token count (Gemini SDK)..."
          export GEMINI_MODEL="$WF_MODEL"
-         python3 scripts/call_gemini.py --count-tokens "$RENDERED_PROMPT" || log "Token counting failed (API key valid?)"
+         "$PYTHON_CMD" scripts/call_gemini.py --count-tokens "$RENDERED_PROMPT" || log "Token counting failed (API key valid?)"
     fi
 
     echo ""
@@ -342,25 +357,25 @@ if [[ "$WF_LLM" == "gemini" ]]; then
     if [[ "$CACHE_HIT" == "false" ]]; then
         log "Calling Gemini API ($WF_MODEL)..."
         export GEMINI_MODEL="$WF_MODEL"
-        if ! python3 scripts/call_gemini.py "$RENDERED_PROMPT" "$RESULT_FILE"; then
+        if ! "$PYTHON_CMD" scripts/call_gemini.py "$RENDERED_PROMPT" "$RESULT_FILE"; then
             error "Gemini API call failed"
         fi
         log "Result saved to $RESULT_FILE"
 
         # Save to Cache
         log "Saving result to cache..."
-        python3 scripts/db_manager.py save "$DIFF_HASH" "$PROMPT_HASH" "$WF_MODEL" "$RESULT_FILE" "0.0"
+        "$PYTHON_CMD" scripts/db_manager.py save "$DIFF_HASH" "$PROMPT_HASH" "$WF_MODEL" "$RESULT_FILE" "0.0" "$REPO_NAME"
     fi
     
     # Validate output if JSON format requested or explicitly strictly structured
     if [[ "$OUTPUT_FORMAT" == "json" ]]; then
         log "Validating JSON output..."
-        if ! python3 scripts/validate_output.py "$RESULT_FILE"; then
+        if ! "$PYTHON_CMD" scripts/validate_output.py "$RESULT_FILE"; then
              log "[WARN] JSON validation failed."
         fi
     elif [[ "$WORKFLOW" == "data_extraction" ]]; then
         log "Validating Structured output..."
-         if ! python3 scripts/validate_output.py "$RESULT_FILE"; then
+         if ! "$PYTHON_CMD" scripts/validate_output.py "$RESULT_FILE"; then
              log "[WARN] validation failed."
         fi
     fi
@@ -394,7 +409,7 @@ fi
 if [[ -n "$POST_STEPS" && "$POST_STEPS" != "None" ]]; then
     log "Executing post_steps: $POST_STEPS"
     
-    if ! python3 -c "import prefect" 2>/dev/null; then
+    if ! "$PYTHON_CMD" -c "import prefect" 2>/dev/null; then
         error "Workflow requires 'prefect' for post_steps, but it is not installed."
     fi
     

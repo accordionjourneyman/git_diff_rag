@@ -5,6 +5,8 @@
 ## Context
 Please review the following changes for the Accordion Practice Tracker.
 
+{% include 'macros/context_history.md' %}
+
 {% include 'library/quality/style_constructive.md' %}
 
 {% include 'library/quality/code_style.md' %}

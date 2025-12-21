@@ -24,6 +24,8 @@ Please provide your review in Markdown format with clear headings.
 {% include 'macros/secret_scan.md' %}
 </security_double_check>
 
+{% include 'macros/context_history.md' %}
+
 <diff_context>
 {{ DIFF_CONTENT }}
 </diff_context>
