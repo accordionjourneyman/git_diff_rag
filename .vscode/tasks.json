@@ -1,0 +1,195 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "PR Review: Generate Bundle",
+      {
+        "version": "2.0.0",
+        "tasks": [
+          {
+            "label": "PR Review: Generate Bundle",
+            "type": "shell",
+            "command": "pwsh",
+            "args": [
+              "-NoProfile",
+              "-ExecutionPolicy",
+              "Bypass",
+              "-File",
+              "${workspaceFolder}/pr-review-tools/New-PRReviewBundle.ps1",
+              "-PRUrl",
+              "${input:prUrl}",
+              "-RepoPath",
+              "${input:repoName}",
+              "-TargetBranch",
+              "${input:targetBranch}"
+            ],
+            "problemMatcher": [],
+            "presentation": {
+              "reveal": "always",
+              "panel": "dedicated",
+              "focus": true,
+              "clear": true
+            },
+            "options": {
+              "cwd": "${workspaceFolder}/pr-review-tools"
+            }
+          },
+          {
+            "label": "PR Review: Generate Bundle (Self Review)",
+            "type": "shell",
+            "command": "pwsh",
+            "args": [
+              "-NoProfile",
+              "-ExecutionPolicy",
+              "Bypass",
+              "-File",
+              "${workspaceFolder}/pr-review-tools/New-PRReviewBundle.ps1",
+              "-CommitRef",
+              "${input:commitRef}",
+              "-RepoPath",
+              "${input:repoName}",
+              "-TargetBranch",
+              "${input:targetBranch}"
+            ],
+            "problemMatcher": [],
+            "presentation": {
+              "reveal": "always",
+              "panel": "dedicated",
+              "focus": true,
+              "clear": true
+            },
+            "options": {
+              "cwd": "${workspaceFolder}/pr-review-tools"
+            }
+          },
+          {
+            "label": "PR Review (Bash): Generate Bundle (Self Review)",
+            "type": "shell",
+            "command": "bash",
+            "args": [
+              "-lc",
+              "cd '${workspaceFolder}' && ./pr-review-tools/New-PRReviewBundle.sh --repo '${input:repoName}' --ref '${input:commitRef}' --target '${input:targetBranch}'"
+            ],
+            "problemMatcher": [],
+            "presentation": {
+              "reveal": "always",
+              "panel": "dedicated",
+              "focus": true,
+              "clear": true
+            }
+          },
+          {
+            "label": "PR Review: Analyze with Copilot",
+            "type": "shell",
+            "command": "pwsh",
+            "args": [
+              "-NoProfile",
+              "-ExecutionPolicy",
+              "Bypass",
+              "-File",
+              "${workspaceFolder}/pr-review-tools/Invoke-CopilotReview.ps1",
+              "-BundlePath",
+              "${input:bundlePath}"
+            ],
+            "problemMatcher": [],
+            "presentation": {
+              "reveal": "always",
+              "panel": "dedicated",
+              "focus": true
+            },
+            "options": {
+              "cwd": "${workspaceFolder}/pr-review-tools"
+            }
+          },
+          {
+            "label": "PR Review (Bash): Analyze with Copilot",
+            "type": "shell",
+            "command": "bash",
+            "args": [
+              "-lc",
+              "cd '${workspaceFolder}' && ./pr-review-tools/Invoke-CopilotReview.sh --bundle '${input:bundlePath}'"
+            ],
+            "problemMatcher": [],
+            "presentation": {
+              "reveal": "always",
+              "panel": "dedicated",
+              "focus": true
+            }
+          },
+          {
+            "label": "PR Review: Save Peer Review",
+            "type": "shell",
+            "command": "pwsh",
+            "args": [
+              "-NoProfile",
+              "-ExecutionPolicy",
+              "Bypass",
+              "-File",
+              "${workspaceFolder}/pr-review-tools/Save-PeerReview.ps1",
+              "-BundlePath",
+              "${input:bundlePath}"
+            ],
+            "problemMatcher": [],
+            "presentation": {
+              "reveal": "always",
+              "panel": "dedicated",
+              "focus": true
+            },
+            "options": {
+              "cwd": "${workspaceFolder}/pr-review-tools"
+            }
+          },
+          {
+            "label": "PR Review (Bash): Save Peer Review",
+            "type": "shell",
+            "command": "bash",
+            "args": [
+              "-lc",
+              "cd '${workspaceFolder}' && ./pr-review-tools/Save-PeerReview.sh --bundle '${input:bundlePath}'"
+            ],
+            "problemMatcher": [],
+            "presentation": {
+              "reveal": "always",
+              "panel": "dedicated",
+              "focus": true
+            }
+          }
+        ],
+        "inputs": [
+          {
+            "id": "prUrl",
+            "type": "promptString",
+            "description": "Azure DevOps PR URL or PR ID number",
+            "default": "https://dev.azure.com/..."
+          },
+          {
+            "id": "commitRef",
+            "type": "promptString",
+            "description": "Commit or branch to review (e.g., HEAD, feature/my-branch)",
+            "default": "HEAD"
+          },
+          {
+            "id": "repoName",
+            "type": "pickString",
+            "description": "Repository to analyze (resolved under ../repos by default)",
+            "options": [
+              "accordion-practice-tracker",
+              "browser_daw",
+              "kimball_project"
+            ],
+            "default": "accordion-practice-tracker"
+          },
+          {
+            "id": "targetBranch",
+            "type": "promptString",
+            "description": "Target branch to diff against",
+            "default": "origin/main"
+          },
+          {
+            "id": "bundlePath",
+            "type": "promptString",
+            "description": "Path to review bundle (from previous task output or browse pr-reviews/)"
+          }
+        ]
+      }
+        "-BundlePath",

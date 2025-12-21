@@ -1,0 +1,31 @@
+# Git Diff RAG
+.env
+output/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test artifacts
+repos/
+data/
+.coverage
+
+# Repository Setup (Local specs)
+repository-setup/*.md
+!repository-setup/TEMPLATE.md
