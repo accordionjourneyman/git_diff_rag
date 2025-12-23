@@ -12,3 +12,10 @@ pytest-cov>=4.0.0
 
 # Orchestration (optional)
 # prefect>=2.0.0
+
+# UI
+streamlit
+streamlit_code_diff
+streamlit_monaco 
+streamlit-antd-components
+streamlit-tree-select

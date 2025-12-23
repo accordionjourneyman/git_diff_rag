@@ -13,6 +13,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from scripts import ui_utils, config_utils, db_manager
 from streamlit_code_diff import st_code_diff
 from streamlit_monaco import st_monaco
+import streamlit_antd_components as sac
 from scripts.render_prompt import render_template
 
 # Page Config
@@ -135,28 +136,84 @@ with tab_review:
     with r_col1:
         st.markdown("### 📂 Files")
         if changed_files:
-            # Simple Tree View Implementation
-            file_tree = {}
-            for f in changed_files:
-                parts = f.split('/')
-                current = file_tree
-                for part in parts[:-1]:
-                    current = current.setdefault(part, {})
-                current[parts[-1]] = f
-
-            def render_tree(node, prefix=""):
-                for name, item in sorted(node.items()):
-                    if isinstance(item, dict):
-                        with st.expander(f"📂 {name}", expanded=True):
-                            render_tree(item, prefix + name + "/")
-                    else:
-                        is_sel = item == st.session_state.selected_file
-                        btn_label = f"{'👉 ' if is_sel else '📄 '}{name}"
-                        if st.button(btn_label, key=f"tree_{item}", use_container_width=True):
-                            st.session_state.selected_file = item
-                            st.rerun()
+            # Filter Input
+            filter_text = st.text_input("Filter files", placeholder="e.g. .py", label_visibility="collapsed")
             
-            render_tree(file_tree)
+            filtered_files = [f for f in changed_files if filter_text.lower() in f.lower()] if filter_text else changed_files
+            
+            if not filtered_files:
+                st.caption("No files match the filter.")
+
+            # Build Tree Structure & Index Map
+            tree_items = []
+            index_map = {} # index_tuple -> full_path
+
+            def add_to_tree(nodes, parts, full_path, current_index_path):
+                part = parts[0]
+                is_file = len(parts) == 1
+                
+                # Find existing node
+                existing_node = None
+                existing_idx = -1
+                for idx, node in enumerate(nodes):
+                    if node.label == part and ((is_file and node.icon == 'file-code') or (not is_file and node.icon == 'folder')):
+                        existing_node = node
+                        existing_idx = idx
+                        break
+                
+                if existing_node:
+                    if is_file:
+                        # Duplicate file in same folder? Should not happen with unique paths
+                        pass
+                    else:
+                        add_to_tree(existing_node.children, parts[1:], full_path, current_index_path + [existing_idx])
+                else:
+                    # Create new node
+                    new_idx = len(nodes)
+                    new_index_path = current_index_path + [new_idx]
+                    
+                    if is_file:
+                        new_node = sac.TreeItem(part, icon='file-code')
+                        nodes.append(new_node)
+                        index_map[tuple(new_index_path)] = full_path
+                    else:
+                        new_node = sac.TreeItem(part, icon='folder', children=[])
+                        nodes.append(new_node)
+                        add_to_tree(new_node.children, parts[1:], full_path, new_index_path)
+
+            for f in sorted(filtered_files):
+                parts = f.split('/')
+                add_to_tree(tree_items, parts, f, [])
+
+            # Render SAC Tree
+            selected_index = sac.tree(
+                items=tree_items, 
+                label='', 
+                align='start', 
+                size='sm', 
+                show_line=True, 
+                icon='folder',
+                open_all=True,
+                return_index=True,
+                key='file_tree'
+            )
+            
+            # Handle Selection
+            if selected_index is not None:
+                idx_path = None
+                if isinstance(selected_index, int):
+                    idx_path = (selected_index,)
+                elif isinstance(selected_index, list) and selected_index:
+                     if isinstance(selected_index[0], int):
+                         idx_path = tuple(selected_index)
+                     elif isinstance(selected_index[0], list):
+                         idx_path = tuple(selected_index[0])
+                
+                if idx_path and idx_path in index_map:
+                    full_path = index_map[idx_path]
+                    if full_path != st.session_state.selected_file:
+                        st.session_state.selected_file = full_path
+                        st.rerun()
         else:
             st.success("No changes detected.")
 
