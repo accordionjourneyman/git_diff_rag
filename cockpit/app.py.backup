@@ -67,7 +67,6 @@ if 'current_step' not in st.session_state: st.session_state.current_step = None
 if 'completed_steps' not in st.session_state: st.session_state.completed_steps = []
 if 'execution_times' not in st.session_state: st.session_state.execution_times = {}
 if 'show_advanced' not in st.session_state: st.session_state.show_advanced = False
-if 'show_advanced' not in st.session_state: st.session_state.show_advanced = False
 if 'setup_complete' not in st.session_state: st.session_state.setup_complete = False
 
 # --- Auto-Detection & Error Handling ---
@@ -193,23 +192,14 @@ if st.session_state.show_advanced:
             else:
                 st.session_state.source_commit = None
 
+st.divider()
+
 # Final Resolved Refs for Engine
 actual_target, actual_source, _is_direct = ui_utils.get_smart_refs(repo_path, st.session_state.target, st.session_state.source, st.session_state.target_commit, st.session_state.source_commit)
 changed_files = ui_utils.get_changed_files(repo_path, st.session_state.target, st.session_state.source, st.session_state.target_commit, st.session_state.source_commit)
 
 if changed_files and not st.session_state.selected_file:
     st.session_state.selected_file = changed_files[0]
-
-# Status Indicator
-if changed_files:
-    total_diff = ui_utils.get_diff(repo_path, actual_target, actual_source, target_commit=st.session_state.target_commit, source_commit=st.session_state.source_commit)
-    lines_added = total_diff.count('\n+')
-    lines_removed = total_diff.count('\n-')
-    st.markdown(f'<span class="status-indicator ready">🟢 {len(changed_files)} files • +{lines_added} -{lines_removed} lines</span>', unsafe_allow_html=True)
-else:
-    st.markdown('<span class="status-indicator">⚪ No changes detected</span>', unsafe_allow_html=True)
-
-st.divider()
 
 # Status Indicator
 if changed_files:

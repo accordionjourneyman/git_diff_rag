@@ -90,9 +90,16 @@ def get_changed_files(repo_path, target, source, target_commit=None, source_comm
 
 def get_file_content(repo_path, ref, file_path):
     """Get content of a file at a specific git reference."""
+    if ref is None:
+        # Working Directory: Read from disk
+        try:
+            with open(os.path.join(repo_path, file_path), 'r') as f:
+                return f.read().replace('\r\n', '\n')
+        except:
+            return ""
+            
     try:
-        # If ref is HEAD and it's a local file, we might want to read from disk if it was modified
-        # But for diff comparison, we usually want the exact ref
+        # Git Reference: Read from git
         result = subprocess.run(
             ["git", "-C", repo_path, "show", f"{ref}:{file_path}"],
             capture_output=True, text=True, check=True
@@ -100,12 +107,8 @@ def get_file_content(repo_path, ref, file_path):
         # Normalize line endings to LF to avoid false positives in diff viewers
         return result.stdout.replace('\r\n', '\n')
     except Exception:
-        # Fallback to direct disk read if git show fails (e.g. for untracked files or HEAD relative paths)
-        try:
-            with open(os.path.join(repo_path, file_path), 'r') as f:
-                return f.read().replace('\r\n', '\n')
-        except:
-            return ""
+        # If git show fails, it likely means the file doesn't exist in that ref (New file or Deleted file)
+        return ""
 
 def get_diff(repo_path, target, source, file_path=None, target_commit=None, source_commit=None):
     """Get raw git diff between target and source for a specific file or whole repo."""
