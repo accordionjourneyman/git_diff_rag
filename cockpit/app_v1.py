@@ -42,9 +42,9 @@ st.markdown("""
     .lego-tag { font-size: 0.7em; padding: 2px 6px; border-radius: 10px; background: #30363d; color: #8b949e; margin-right: 8px; }
     
     .status-bar { padding: 8px 20px; background: #161b22; border-top: 1px solid #30363d; position: fixed; bottom: 0; left: 0; width: 100%; color: #8b949e; z-index: 1000; font-family: monospace; font-size: 0.85em; }
-    .hero-btn>button { background: linear-gradient(135deg, #1f6feb, #58a6ff) !important; color: white !important; height: 3.5rem !important; font-size: 1.2em !important; font-weight: 700 !important; border: none !important; border-radius: 8px !important; box-shadow: 0 4px 20px rgba(31, 111, 235, 0.4) !important; transition: all 0.3s !important; }
-    .hero-btn>button:hover { transform: translateY(-2px) !important; box-shadow: 0 6px 25px rgba(31, 111, 235, 0.6) !important; }
-    .status-indicator { display: inline-block; padding: 6px 14px; background: #21262d; border: 1px solid #30363d; border-radius: 20px; font-size: 0.9em; color: #8b949e; font-weight: 500; }
+    .hero-btn>button { background: linear-gradient(135deg, #1f6feb, #58a6ff) !important; color: white !important; height: 3.5rem !important; font-size: 1.2em !important; font-weight: 700 !important; border: none !important; border-radius: 8px !important; box-shadow: 0 4px 20px rgba(31, 111, 235, 0.4); transition: all 0.3s; }
+    .hero-btn>button:hover { transform: translateY(-2px); box-shadow: 0 6px 25px rgba(31, 111, 235, 0.6); }
+    .status-indicator { display: inline-block; padding: 4px 12px; background: #21262d; border: 1px solid #30363d; border-radius: 20px; font-size: 0.85em; color: #8b949e; margin-left: 10px; }
     .status-indicator.ready { border-color: #238636; color: #2ea043; }
     .compact-select { margin-bottom: 0.5rem; }
     /* Mermaid Styles Override */
