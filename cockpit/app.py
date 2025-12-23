@@ -234,7 +234,7 @@ with tab_analyze:
     # Config Row
     c_tool, c_model = st.columns([1, 1])
     with c_tool:
-        tool_choice = st.selectbox("Tool", ["Gemini API", "Gemini CLI"])
+        tool_choice = st.selectbox("Tool", ["Gemini API", "Gemini CLI", "GitHub Copilot CLI"])
     with c_model:
         # Default models to avoid blocking startup
         default_models = ["gemini-2.0-flash-exp", "gemini-1.5-pro", "gemini-1.5-flash"]
@@ -325,7 +325,7 @@ with tab_analyze:
                 with open(diff_path, "w") as f:
                     f.write(diff_content)
 
-                # 3. Call Gemini
+                # 3. Call AI Model
                 st.write(f"🤖 Calling {tool_choice} ({model_choice})...")
                 response = ""
                 
@@ -334,7 +334,25 @@ with tab_analyze:
                     response = call_gemini.call_with_retry(full_prompt, model=model_choice)
                     with open(response_path, "w") as f:
                         f.write(response)
-                else:
+                        
+                elif tool_choice == "GitHub Copilot CLI":
+                    # Direct Python integration
+                    from scripts import call_copilot_cli
+                    
+                    try:
+                        response = call_copilot_cli.call_copilot(
+                            full_prompt,
+                            allow_tools=['shell(git)', 'write'],
+                            timeout=300
+                        )
+                        with open(response_path, "w") as f:
+                            f.write(response)
+                    except call_copilot_cli.CopilotNotInstalledError:
+                        raise RuntimeError("GitHub Copilot CLI is not installed. See: https://docs.github.com/en/copilot/how-tos/set-up/install-copilot-cli")
+                    except call_copilot_cli.CopilotAuthError:
+                        raise RuntimeError("GitHub Copilot CLI is not authenticated. Run 'copilot' in terminal to authenticate.")
+                    
+                else:  # Gemini CLI
                     # CLI Call (via launch_agent.sh)
                     script_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "scripts", "launch_agent.sh")
                     
