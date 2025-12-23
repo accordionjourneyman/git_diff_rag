@@ -15,7 +15,7 @@ def list_repositories():
     files = glob.glob("repository-setup/*.md")
     for f in files:
         name = os.path.basename(f).replace(".md", "")
-        if name not in ["README", "template"]:
+        if name.upper() not in ["README", "TEMPLATE"]:
             repos.append(name)
     return sorted(repos)
 

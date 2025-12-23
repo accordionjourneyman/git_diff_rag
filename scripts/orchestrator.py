@@ -336,34 +336,34 @@ def call_llm(
     model = wf_config.workflow_config.get('model', 'gemini-1.5-flash')
     
     try:
-        if llm_provider == 'gemini':
-            logger.info(f"🤖 Calling Gemini API ({model})...")
-            response = call_gemini.call_with_retry(prompt, model=model)
-            return response
-            
-        elif llm_provider == 'gh-copilot':
-            logger.info(f"🤖 Calling GitHub Copilot CLI ({model})...")
-            response = call_copilot_cli.call_copilot(
+        # Use Strategy Pattern for LLM provider selection
+        from scripts.llm_strategy import get_provider
+        
+        provider = get_provider(llm_provider)
+        
+        if not provider.is_available():
+            raise WorkflowError(
+                f"LLM provider '{llm_provider}' is not available. "
+                f"Check installation and authentication."
+            )
+        
+        logger.info(f"🤖 Calling {llm_provider} ({model})...")
+        
+        # Call the provider with appropriate parameters
+        if llm_provider == 'gh-copilot':
+            response = provider.call(
                 prompt,
                 allow_tools=['shell(git)', 'write'],
                 timeout=300
             )
-            return response
-            
-        elif llm_provider == 'copilot':
-            # Manual clipboard mode
-            logger.info("📋 Copilot workflow: Preparing prompt for manual paste...")
-            copied = clipboard.copy_to_clipboard(prompt)
-            if copied:
-                logger.info("✓ Prompt copied to clipboard!")
-                return "[COPILOT_MANUAL_MODE] Prompt copied to clipboard. Please paste into Copilot Chat."
-            else:
-                logger.warning("⚠️  Clipboard not available. Prompt saved to file only.")
-                return "[COPILOT_MANUAL_MODE] Prompt saved to file. No clipboard available."
-        
         else:
-            raise WorkflowError(f"Unknown LLM provider: {llm_provider}")
+            response = provider.call(prompt, model=model)
+        
+        return response
             
+    except ValueError as e:
+        # Unknown provider
+        raise WorkflowError(str(e))
     except call_copilot_cli.CopilotNotInstalledError as e:
         raise WorkflowError(f"Copilot CLI not available: {e}")
     except call_copilot_cli.CopilotAuthError as e:

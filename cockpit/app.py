@@ -69,12 +69,16 @@ if 'execution_times' not in st.session_state: st.session_state.execution_times =
 if 'show_advanced' not in st.session_state: st.session_state.show_advanced = False
 if 'show_advanced' not in st.session_state: st.session_state.show_advanced = False
 if 'setup_complete' not in st.session_state: st.session_state.setup_complete = False
+if 'execution_result' not in st.session_state: st.session_state.execution_result = None
+if 'show_results' not in st.session_state: st.session_state.show_results = False
+if 'tool_choice' not in st.session_state: st.session_state.tool_choice = "GitHub Copilot CLI"
+if 'model_choice' not in st.session_state: st.session_state.model_choice = "gpt-4"
 
 # --- Auto-Detection & Error Handling ---
 repos = ui_utils.list_repositories()
 
-# Auto-detect current repo if not set
-if not st.session_state.repo:
+# Auto-detect current repo if not set, or if current repo is invalid
+if not st.session_state.repo or st.session_state.repo not in repos:
     if repos:
         st.session_state.repo = repos[0]
         st.session_state.setup_complete = True
@@ -130,7 +134,7 @@ except (subprocess.CalledProcessError, FileNotFoundError):
 
 # --- COMPACT TOP BAR ---
 with st.container():
-    col1, col2, col3, col4 = st.columns([2, 2, 2, 1])
+    col1, col2, col3, col4 = st.columns([2, 2, 2, 0.8])
     
     with col1:
         new_repo = st.selectbox("📦 Repository", options=repos, 
@@ -161,6 +165,8 @@ with st.container():
             st.rerun()
     
     with col4:
+        # Invisible header to align the Advanced button vertically with the selects
+        st.markdown("<p style='padding-top: 12px;'></p>", unsafe_allow_html=True)
         if st.button("⚙️ Advanced", use_container_width=True):
             st.session_state.show_advanced = not st.session_state.show_advanced
             st.rerun()
@@ -211,15 +217,6 @@ else:
 
 st.divider()
 
-# Status Indicator
-if changed_files:
-    total_diff = ui_utils.get_diff(repo_path, actual_target, actual_source, target_commit=st.session_state.target_commit, source_commit=st.session_state.source_commit)
-    lines_added = total_diff.count('\n+')
-    lines_removed = total_diff.count('\n-')
-    st.markdown(f'<span class="status-indicator ready">🟢 {len(changed_files)} files changed (+{lines_added}, -{lines_removed} lines)</span>', unsafe_allow_html=True)
-else:
-    st.markdown('<span class="status-indicator">⚪ No changes detected</span>', unsafe_allow_html=True)
-
 # --- MAIN LAYOUT ---
 # Master Navigation Tabs (Simplified)
 tab_review, tab_history, tab_editor, tab_settings = st.tabs(["🔍 Review & Analyze", "📜 History", "📝 Editor", "⚙️ Settings"])
@@ -248,7 +245,7 @@ with tab_review:
         st.markdown('</div>', unsafe_allow_html=True)
     
     # Collapsible Prompt Customization
-    with st.expander("🧱 Customize Instructions (Advanced)", expanded=False):
+    with st.expander("🧱 Customize Instructions", expanded=False):
         cust_col1, cust_col2 = st.columns([1, 2])
         
         with cust_col1:
@@ -280,14 +277,22 @@ with tab_review:
     
     # Tool Selection
     with st.expander("⚙️ AI Tool Configuration", expanded=False):
-        tool_col1, tool_col2 = st.columns(2)
-        with tool_col1:
-            tool_choice = st.selectbox("AI Provider", ["Gemini API", "GitHub Copilot CLI"])
-        with tool_col2:
+        new_tool = st.selectbox("AI Provider", ["GitHub Copilot CLI", "Gemini API"], 
+                               index=0 if st.session_state.tool_choice == "GitHub Copilot CLI" else 1)
+        if new_tool != st.session_state.tool_choice:
+            st.session_state.tool_choice = new_tool
+            st.rerun()
+        
+        if st.session_state.tool_choice == "Gemini API":
             default_models = ["gemini-2.0-flash-exp", "gemini-1.5-pro", "gemini-1.5-flash"]
             if 'available_models' not in st.session_state:
                 st.session_state.available_models = default_models
-            model_choice = st.selectbox("Model", st.session_state.available_models, index=0)
+            new_model = st.selectbox("Model", st.session_state.available_models, index=0)
+            if new_model != st.session_state.model_choice:
+                st.session_state.model_choice = new_model
+        else:
+            st.session_state.model_choice = "gpt-4"  # Default for Copilot CLI
+            st.caption("Using GitHub Copilot CLI (no model selection needed)")
     
     st.divider()
     
@@ -430,23 +435,29 @@ with tab_review:
     # Execution Status (if running)
     if st.session_state.is_executing:
         st.divider()
-        st.markdown("### 📊 Analysis In Progress")
+        st.markdown("### � AI Review In Progress")
         
         with st.status("Running AI Review...", expanded=True) as status:
             try:
-                # Execution logic (moved from Run Analysis tab)
-                st.write("📥 Fetching diff...")
+                # Step 1: Fetch diff
+                st.write("📥 **Step 1/5:** Fetching diff from repository...")
                 diff_content = ui_utils.get_diff(repo_path, actual_target, actual_source, 
                                                 target_commit=st.session_state.target_commit, 
                                                 source_commit=st.session_state.source_commit)
+                st.write(f"   ✓ Fetched {len(diff_content)} characters of changes")
                 
-                st.write("🧱 Preparing prompt...")
+                # Step 2: Prepare prompt
+                st.write("🧱 **Step 2/5:** Building review prompt...")
                 full_prompt = f"# CODE REVIEW REQUEST\n\n## DIFF\n\n```diff\n{diff_content}\n```\n\n"
                 
                 for p in st.session_state.active_bundle:
                     part = render_template(p, diff_content, repo_name=st.session_state.repo, inject_diff_content=False)
                     full_prompt += f"\n---\n\n{part}"
                 
+                st.write(f"   ✓ Prompt ready ({len(st.session_state.active_bundle)} instruction(s) included)")
+                
+                # Step 3: Save artifacts
+                st.write("💾 **Step 3/5:** Saving artifacts...")
                 timestamp = datetime.now().strftime("%Y%m%dT%H%M%S")
                 out_folder = f"output/{timestamp}-{st.session_state.repo}-review"
                 os.makedirs(out_folder, exist_ok=True)
@@ -456,42 +467,90 @@ with tab_review:
                 with open(f"{out_folder}/diff.patch", "w") as f:
                     f.write(diff_content)
                 
-                st.write(f"🤖 Calling {tool_choice}...")
-                response = ""
+                st.write(f"   ✓ Saved to `{out_folder}`")
                 
-                if tool_choice == "Gemini API":
-                    from scripts import call_gemini
-                    response = call_gemini.call_with_retry(full_prompt, model=model_choice)
+                # Step 4: Call AI
+                st.write(f"🤖 **Step 4/5:** Calling {st.session_state.tool_choice} with {st.session_state.model_choice}...")
+                st.info("⏳ This may take 30-60 seconds. Please wait...")
+                
+                # Use Strategy Pattern for LLM provider
+                from scripts.llm_strategy import get_provider
+                
+                provider_map = {
+                    "Gemini API": "gemini",
+                    "GitHub Copilot CLI": "gh-copilot"
+                }
+                provider_name = provider_map.get(st.session_state.tool_choice, "gemini")
+                provider = get_provider(provider_name)
+                
+                # Call the provider
+                if provider_name == "gh-copilot":
+                    response = provider.call(full_prompt, allow_tools=['shell(git)', 'write'], timeout=300)
                 else:
-                    from scripts import call_copilot_cli
-                    response = call_copilot_cli.call_copilot(full_prompt, allow_tools=['shell(git)', 'write'], timeout=300)
+                    response = provider.call(full_prompt, model=st.session_state.model_choice)
                 
+                if response:
+                    st.write(f"   ✓ Received {len(response)} characters of analysis")
+                else:
+                    st.warning("   ⚠️ Received empty response from AI")
+                
+                # Step 5: Save response
+                st.write("💾 **Step 5/5:** Saving results...")
                 with open(f"{out_folder}/response.md", "w") as f:
                     f.write(response)
                 
-                st.write("💾 Saving results...")
                 db_manager.save_cache(
                     diff_hash=hashlib.md5(diff_content.encode()).hexdigest(),
                     prompt_hash=hashlib.md5(full_prompt.encode()).hexdigest(),
-                    model=model_choice,
+                    model=st.session_state.model_choice,
                     response=response,
                     repo_name=st.session_state.repo,
-                    summary=response[:100] + "...",
+                    summary=response[:100] + "..." if response else "Empty response",
                     tags="ui_review"
                 )
                 
-                status.update(label="✅ Analysis Complete!", state="complete", expanded=False)
-                st.session_state.is_executing = False
-                st.success(f"Review saved to `{out_folder}`")
+                st.write("   ✓ Results saved to database and file")
                 
-                # Display results
-                st.markdown("### 📋 AI Review")
-                st.markdown(response)
+                status.update(label="✅ Analysis Complete!", state="complete", expanded=False)
+                
+                # Store result and trigger results display
+                st.session_state.execution_result = response
+                st.session_state.is_executing = False
+                st.session_state.show_results = True
+                st.session_state.current_step = None
+                
+                st.success(f"🎉 Review complete! Check the results below or in the History tab.")
+                st.rerun()
                 
             except Exception as e:
                 status.update(label="❌ Analysis Failed", state="error")
-                st.error(f"Error: {e}")
+                st.error(f"**Error during execution:**\n\n{str(e)}")
+                import traceback
+                with st.expander("📋 Full Traceback"):
+                    st.code(traceback.format_exc())
                 st.session_state.is_executing = False
+                st.session_state.current_step = None
+    
+    # Display Results (after execution completes)
+    if st.session_state.show_results and st.session_state.execution_result:
+        st.divider()
+        
+        result_col1, result_col2 = st.columns([3, 1])
+        with result_col1:
+            st.markdown("### ✅ AI Review Results")
+        with result_col2:
+            if st.button("✖️ Dismiss", use_container_width=True):
+                st.session_state.show_results = False
+                st.session_state.execution_result = None
+                st.rerun()
+        
+        # Display the review in a container for easy copying
+        st.markdown("---")
+        st.markdown(st.session_state.execution_result)
+        
+        # Show raw markdown in an expander for easy copying
+        with st.expander("📋 Copy Raw Markdown"):
+            st.code(st.session_state.execution_result, language="markdown")
 
 # --- TAB 2: HISTORY ---
 

@@ -1,13 +1,14 @@
-"""Cross-platform clipboard utilities.
+"""Simplified cross-platform clipboard utilities.
 
-Provides a unified interface for clipboard operations across Windows, macOS, and Linux,
-replacing the platform-specific bash clipboard detection.
+Provides clipboard operations via pyperclip with minimal fallback to system commands.
 """
 
-import sys
 import subprocess
 import platform
+import logging
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 
 class ClipboardError(Exception):
@@ -16,119 +17,75 @@ class ClipboardError(Exception):
 
 
 def copy_to_clipboard(text: str) -> bool:
-    """Copy text to system clipboard using the best available method.
+    """Copy text to system clipboard.
     
     Args:
         text: Text to copy to clipboard
         
     Returns:
-        True if successful, False if no clipboard method available
-        
-    Raises:
-        ClipboardError: If clipboard operation fails
+        True if successful, False otherwise
     """
-    # Try pyperclip first (cross-platform)
+    # Try pyperclip first (recommended, cross-platform)
     try:
         import pyperclip
         pyperclip.copy(text)
         return True
-    except (ImportError, Exception):
-        pass
+    except ImportError:
+        logger.warning(
+            "pyperclip not installed. For better clipboard support, install with: "
+            "pip install pyperclip"
+        )
+        # Fall through to system command fallback
+    except Exception as e:
+        logger.error(f"pyperclip failed: {e}")
+        # Fall through to system command fallback
     
-    # Fall back to platform-specific methods
+    # Minimal platform-specific fallbacks
     system = platform.system()
     
     try:
-        if system == 'Windows':
-            return _copy_windows(text)
-        elif system == 'Darwin':  # macOS
-            return _copy_macos(text)
+        if system == 'Darwin':  # macOS
+            subprocess.run(
+                ['pbcopy'],
+                input=text.encode('utf-8'),
+                check=True,
+                timeout=5
+            )
+            return True
         elif system == 'Linux':
-            return _copy_linux(text)
-        else:
+            # Try wl-copy (Wayland) first, then xclip (X11)
+            for cmd in [['wl-copy'], ['xclip', '-selection', 'clipboard']]:
+                try:
+                    subprocess.run(
+                        cmd,
+                        input=text.encode('utf-8'),
+                        check=True,
+                        timeout=5,
+                        stderr=subprocess.DEVNULL
+                    )
+                    return True
+                except (FileNotFoundError, subprocess.CalledProcessError):
+                    continue
+            
+            logger.warning(
+                "No clipboard tool found. Install wl-copy (Wayland) or xclip (X11): "
+                "apt install wl-clipboard xclip"
+            )
             return False
+        elif system == 'Windows':
+            # Windows: Try PowerShell as fallback
+            subprocess.run(
+                ['powershell', '-Command', f'Set-Clipboard -Value "{text}"'],
+                check=True,
+                timeout=5
+            )
+            return True
+        else:
+            logger.warning(f"Unsupported platform: {system}")
+            return False
+            
     except Exception as e:
-        raise ClipboardError(f"Failed to copy to clipboard: {e}")
-
-
-def _copy_windows(text: str) -> bool:
-    """Copy to clipboard on Windows using PowerShell."""
-    try:
-        # Try using win32clipboard if available
-        import win32clipboard
-        win32clipboard.OpenClipboard()
-        win32clipboard.EmptyClipboard()
-        win32clipboard.SetClipboardText(text)
-        win32clipboard.CloseClipboard()
-        return True
-    except ImportError:
-        pass
-    
-    # Fall back to PowerShell
-    try:
-        process = subprocess.Popen(
-            ['powershell', '-command', '-'],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True
-        )
-        process.communicate(input=f'Set-Clipboard -Value {repr(text)}')
-        return process.returncode == 0
-    except Exception:
-        return False
-
-
-def _copy_macos(text: str) -> bool:
-    """Copy to clipboard on macOS using pbcopy."""
-    try:
-        process = subprocess.Popen(
-            ['pbcopy'],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True
-        )
-        process.communicate(input=text)
-        return process.returncode == 0
-    except FileNotFoundError:
-        return False
-
-
-def _copy_linux(text: str) -> bool:
-    """Copy to clipboard on Linux using available tools.
-    
-    Tries in order: wl-copy (Wayland), xclip (X11), xsel (X11)
-    """
-    # Try Wayland clipboard
-    if _try_linux_tool(['wl-copy'], text):
-        return True
-    
-    # Try X11 clipboard tools
-    if _try_linux_tool(['xclip', '-selection', 'clipboard'], text):
-        return True
-    
-    if _try_linux_tool(['xsel', '--clipboard', '--input'], text):
-        return True
-    
-    return False
-
-
-def _try_linux_tool(cmd: list[str], text: str) -> bool:
-    """Try to copy using a specific Linux clipboard tool."""
-    try:
-        process = subprocess.Popen(
-            cmd,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True
-        )
-        process.communicate(input=text)
-        return process.returncode == 0
-    except FileNotFoundError:
-        return False
-    except Exception:
+        logger.error(f"Clipboard operation failed: {e}")
         return False
 
 
@@ -136,127 +93,110 @@ def get_from_clipboard() -> Optional[str]:
     """Get text from system clipboard.
     
     Returns:
-        Clipboard text or None if unavailable
+        Clipboard contents or None if unavailable
     """
     # Try pyperclip first
     try:
         import pyperclip
         return pyperclip.paste()
-    except (ImportError, Exception):
+    except ImportError:
         pass
+    except Exception as e:
+        logger.error(f"pyperclip failed: {e}")
     
-    # Platform-specific fallbacks
+    # Minimal platform-specific fallbacks
     system = platform.system()
     
     try:
-        if system == 'Windows':
-            return _get_windows()
-        elif system == 'Darwin':
-            return _get_macos()
-        elif system == 'Linux':
-            return _get_linux()
-    except Exception:
-        pass
-    
-    return None
-
-
-def _get_windows() -> Optional[str]:
-    """Get clipboard content on Windows."""
-    try:
-        import win32clipboard
-        win32clipboard.OpenClipboard()
-        text = win32clipboard.GetClipboardData()
-        win32clipboard.CloseClipboard()
-        return text
-    except ImportError:
-        pass
-    
-    # PowerShell fallback
-    try:
-        result = subprocess.run(
-            ['powershell', '-command', 'Get-Clipboard'],
-            capture_output=True,
-            text=True,
-            check=True
-        )
-        return result.stdout
-    except Exception:
-        return None
-
-
-def _get_macos() -> Optional[str]:
-    """Get clipboard content on macOS."""
-    try:
-        result = subprocess.run(
-            ['pbpaste'],
-            capture_output=True,
-            text=True,
-            check=True
-        )
-        return result.stdout
-    except Exception:
-        return None
-
-
-def _get_linux() -> Optional[str]:
-    """Get clipboard content on Linux."""
-    # Try Wayland
-    try:
-        result = subprocess.run(
-            ['wl-paste'],
-            capture_output=True,
-            text=True,
-            check=True
-        )
-        return result.stdout
-    except Exception:
-        pass
-    
-    # Try X11 tools
-    for cmd in [['xclip', '-selection', 'clipboard', '-o'], ['xsel', '--clipboard', '--output']]:
-        try:
+        if system == 'Darwin':  # macOS
             result = subprocess.run(
-                cmd,
+                ['pbpaste'],
                 capture_output=True,
                 text=True,
-                check=True
+                check=True,
+                timeout=5
             )
             return result.stdout
-        except Exception:
-            continue
-    
-    return None
+        elif system == 'Linux':
+            # Try wl-paste (Wayland) first, then xclip (X11)
+            for cmd in [['wl-paste'], ['xclip', '-selection', 'clipboard', '-o']]:
+                try:
+                    result = subprocess.run(
+                        cmd,
+                        capture_output=True,
+                        text=True,
+                        check=True,
+                        timeout=5,
+                        stderr=subprocess.DEVNULL
+                    )
+                    return result.stdout
+                except (FileNotFoundError, subprocess.CalledProcessError):
+                    continue
+            return None
+        elif system == 'Windows':
+            result = subprocess.run(
+                ['powershell', '-Command', 'Get-Clipboard'],
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=5
+            )
+            return result.stdout
+        else:
+            return None
+            
+    except Exception as e:
+        logger.error(f"Failed to get clipboard content: {e}")
+        return None
 
 
 def is_clipboard_available() -> bool:
-    """Check if clipboard functionality is available.
+    """Check if clipboard is available.
     
     Returns:
-        True if clipboard operations are supported
+        True if clipboard operations are likely to work
     """
+    # Check if pyperclip is available
     try:
         import pyperclip
+        # Try a test operation
+        pyperclip.copy("")
         return True
     except ImportError:
         pass
+    except Exception:
+        # pyperclip installed but doesn't work (e.g., headless Linux)
+        pass
     
+    # Check platform-specific commands
     system = platform.system()
     
-    if system == 'Windows':
-        # Windows should always have PowerShell or win32clipboard
-        return True
-    elif system == 'Darwin':
-        # macOS should always have pbcopy
-        return True
+    if system == 'Darwin':
+        return _command_exists('pbcopy')
     elif system == 'Linux':
-        # Check if any Linux tool is available
-        for tool in ['wl-copy', 'xclip', 'xsel']:
-            try:
-                subprocess.run([tool, '--version'], capture_output=True, check=False)
-                return True
-            except FileNotFoundError:
-                continue
-        return False
+        return _command_exists('wl-copy') or _command_exists('xclip')
+    elif system == 'Windows':
+        return True  # PowerShell should always be available
     
     return False
+
+
+def _command_exists(command: str) -> bool:
+    """Check if a command exists in PATH.
+    
+    Args:
+        command: Command name to check
+        
+    Returns:
+        True if command exists
+    """
+    try:
+        subprocess.run(
+            [command, '--version'],
+            capture_output=True,
+            timeout=2,
+            check=False
+        )
+        return True
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return False

@@ -113,8 +113,8 @@ def call_copilot(
             "Install it from: https://docs.github.com/en/copilot/how-tos/set-up/install-copilot-cli"
         )
     
-    # Build command
-    cmd = ['copilot', '-p', prompt]
+    # Build command - use stdin for large prompts to avoid argument list too long error
+    cmd = ['copilot']
     
     # Add tool permissions
     if allow_all_tools:
@@ -131,6 +131,7 @@ def call_copilot(
     try:
         result = subprocess.run(
             cmd,
+            input=prompt,
             capture_output=True,
             text=True,
             timeout=timeout,
