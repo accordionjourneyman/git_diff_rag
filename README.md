@@ -55,7 +55,7 @@ cp .env.example .env
 ./scripts/New-Bundle.sh --repo my-repo --commit HEAD
 ```
 
-## 💡 50 Use Cases (Examples)
+## 💡 Use Cases (Examples)
 
 1.  **Self-Review**: `New-Bundle.sh --commit HEAD` before pushing.
 2.  **Post-Mortem**: `New-Bundle.sh --workflow blame --commit <bad-sha>` to find root causes.
