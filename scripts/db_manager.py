@@ -3,16 +3,24 @@ import sqlite3
 import sys
 import os
 import json
+import argparse
+from typing import Optional, List, Dict, Any
 
 # Database path: repo_root/data/history.sqlite
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(SCRIPT_DIR)
 DB_PATH = os.path.join(REPO_ROOT, 'data', 'history.sqlite')
 
-def init_db():
-    """Initialize the SQLite database and schema."""
+def get_db_connection():
+    """Establishes a database connection."""
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+def init_db():
+    """Initialize the SQLite database and schema."""
+    conn = get_db_connection()
     c = conn.cursor()
     
     # Create table if not exists
@@ -24,14 +32,51 @@ def init_db():
                   model TEXT,
                   response TEXT,
                   cost REAL,
-                  repo_name TEXT)''')
+                  repo_name TEXT,
+                  summary TEXT,
+                  tags TEXT,
+                  entry_type TEXT DEFAULT 'review')''')
     
-    # Check if repo_name column exists (migration)
+    # Migration: Check for new columns
     c.execute("PRAGMA table_info(analysis_history)")
-    columns = [info[1] for info in c.fetchall()]
-    if 'repo_name' not in columns:
-        print("[DB] Migrating: Adding repo_name column...")
-        c.execute("ALTER TABLE analysis_history ADD COLUMN repo_name TEXT")
+    existing_columns = {info[1] for info in c.fetchall()}
+    
+    required_columns = {
+        'summary': 'TEXT',
+        'tags': 'TEXT',
+        'repo_name': 'TEXT',
+        'entry_type': "TEXT DEFAULT 'review'"
+    }
+
+    for col, col_def in required_columns.items():
+        if col not in existing_columns:
+            print(f"[DB] Migrating: Adding {col} column...")
+            try:
+                c.execute(f"ALTER TABLE analysis_history ADD COLUMN {col} {col_def}")
+            except sqlite3.OperationalError as e:
+                print(f"[DB] Migration warning for {col}: {e}")
+
+    # Create FTS5 Virtual Table for semantic search
+    try:
+        c.execute('''CREATE VIRTUAL TABLE IF NOT EXISTS analysis_history_fts 
+                     USING fts5(id UNINDEXED, summary, tags, entry_type, content='analysis_history', content_rowid='id')''')
+        
+        # Triggers to keep FTS in sync
+        c.execute('''CREATE TRIGGER IF NOT EXISTS history_ai AFTER INSERT ON analysis_history BEGIN
+                     INSERT INTO analysis_history_fts(rowid, id, summary, tags, entry_type) VALUES (new.id, new.id, new.summary, new.tags, new.entry_type);
+                     END''')
+        c.execute('''CREATE TRIGGER IF NOT EXISTS history_ad AFTER DELETE ON analysis_history BEGIN
+                     INSERT INTO analysis_history_fts(analysis_history_fts, rowid, id, summary, tags, entry_type) 
+                     VALUES('delete', old.id, old.id, old.summary, old.tags, old.entry_type);
+                     END''')
+        c.execute('''CREATE TRIGGER IF NOT EXISTS history_au AFTER UPDATE ON analysis_history BEGIN
+                     INSERT INTO analysis_history_fts(analysis_history_fts, rowid, id, summary, tags, entry_type) 
+                     VALUES('delete', old.id, old.id, old.summary, old.tags, old.entry_type);
+                     INSERT INTO analysis_history_fts(rowid, id, summary, tags, entry_type) 
+                     VALUES (new.id, new.id, new.summary, new.tags, new.entry_type);
+                     END''')
+    except sqlite3.OperationalError as e:
+        print(f"[DB] [WARN] FTS5 not supported or error: {e}")
 
     # Index for fast lookups
     c.execute('CREATE INDEX IF NOT EXISTS idx_cache ON analysis_history (diff_hash, prompt_hash, model)')
@@ -39,14 +84,13 @@ def init_db():
     
     conn.commit()
     conn.close()
-    # print(f"[DB] Initialized at {DB_PATH}")
 
-def get_cache(diff_hash, prompt_hash, model):
+def get_cache(diff_hash: str, prompt_hash: str, model: str) -> Optional[str]:
     """Retrieve cached response if exists."""
     if not os.path.exists(DB_PATH):
         return None
         
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_connection()
     c = conn.cursor()
     c.execute('''SELECT response FROM analysis_history 
                  WHERE diff_hash=? AND prompt_hash=? AND model=? 
@@ -54,91 +98,172 @@ def get_cache(diff_hash, prompt_hash, model):
               (diff_hash, prompt_hash, model))
     row = c.fetchone()
     conn.close()
-    return row[0] if row else None
+    return row['response'] if row else None
 
-def get_context(repo_name, limit=3):
-    """Retrieve recent analysis history for context."""
+def get_context(repo_name: str, limit: int = 3, search_query: Optional[str] = None) -> List[Dict[str, Any]]:
+    """Retrieve recent analysis history for context, optionally filtered by search."""
     if not os.path.exists(DB_PATH):
-        return []
+        return [{"status": "no_history", "message": "<!-- No relevant historical reviews found (DB missing) -->"}]
         
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
+    conn = get_db_connection()
     c = conn.cursor()
-    # Get recent successful responses for this repo
-    c.execute('''SELECT timestamp, model, response FROM analysis_history 
-                 WHERE repo_name=? 
-                 ORDER BY timestamp DESC LIMIT ?''',
-              (repo_name, limit))
+    
+    query_base = "SELECT id, timestamp, model, response, summary, tags, entry_type FROM analysis_history"
+    
+    if search_query:
+        # Search using FTS5
+        try:
+            c.execute('''SELECT h.id, h.timestamp, h.model, h.response, h.summary, h.tags, h.entry_type 
+                         FROM analysis_history h
+                         JOIN analysis_history_fts f ON h.id = f.rowid
+                         WHERE h.repo_name=? AND analysis_history_fts MATCH ?
+                         ORDER BY (h.entry_type = 'agent_session') DESC, rank LIMIT ?''',
+                      (repo_name, search_query, limit))
+        except sqlite3.OperationalError:
+            # Fallback
+            c.execute(f'''{query_base} 
+                         WHERE repo_name=? AND (summary LIKE ? OR tags LIKE ?)
+                         ORDER BY (entry_type = 'agent_session') DESC, timestamp DESC LIMIT ?''',
+                      (repo_name, f'%{search_query}%', f'%{search_query}%', limit))
+    else:
+        c.execute(f'''{query_base} 
+                     WHERE repo_name=? 
+                     ORDER BY (entry_type = 'agent_session') DESC, timestamp DESC LIMIT ?''',
+                  (repo_name, limit))
+    
     rows = c.fetchall()
     conn.close()
     
+    if not rows:
+        return [{"status": "no_history", "message": "<!-- No relevant historical reviews found -->"}]
+        
     context = []
     for row in rows:
         context.append({
+            "id": row['id'],
             "timestamp": row['timestamp'],
             "model": row['model'],
+            "summary": row['summary'] or "No summary available",
+            "tags": row['tags'] or "",
+            "entry_type": row['entry_type'],
             "response": row['response']
         })
     return context
 
-def save_cache(diff_hash, prompt_hash, model, response, cost=0.0, repo_name=None):
+def save_cache(diff_hash: str, prompt_hash: str, model: str, response: str, 
+               cost: float = 0.0, repo_name: str = None, summary: str = None, 
+               tags: str = None, entry_type: str = 'review'):
     """Save a new analysis result."""
     init_db() # Ensure DB exists
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_connection()
     c = conn.cursor()
-    c.execute('''INSERT INTO analysis_history (diff_hash, prompt_hash, model, response, cost, repo_name) 
-                 VALUES (?, ?, ?, ?, ?, ?)''',
-              (diff_hash, prompt_hash, model, response, cost, repo_name))
+    c.execute('''INSERT INTO analysis_history (diff_hash, prompt_hash, model, response, cost, repo_name, summary, tags, entry_type) 
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+              (diff_hash, prompt_hash, model, response, cost, repo_name, summary, tags, entry_type))
     conn.commit()
     conn.close()
-    print(f"[DB] Saved cache entry for {diff_hash[:8]} (Repo: {repo_name})")
+    print(f"[DB] Saved {entry_type} entry for {diff_hash[:8]} (Repo: {repo_name}, Tags: {tags})")
 
-if __name__ == '__main__':
-    if len(sys.argv) < 2:
-        print("Usage: db_manager.py <init|get|save|get-context> [args...]")
-        sys.exit(1)
-
-    cmd = sys.argv[1]
-    
-    if cmd == 'init':
-        init_db()
+def update_tags(entry_id: int, add_tags: str = None, remove_tags: str = None):
+    """Manually update tags for a specific entry."""
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute("SELECT tags FROM analysis_history WHERE id=?", (entry_id,))
+    row = c.fetchone()
+    if not row:
+        print(f"[ERROR] Entry ID {entry_id} not found.")
+        conn.close()
+        return False
         
-    elif cmd == 'get':
-        if len(sys.argv) < 5:
-            print("Usage: db_manager.py get <diff_hash> <prompt_hash> <model>")
-            sys.exit(1)
-        res = get_cache(sys.argv[2], sys.argv[3], sys.argv[4])
+    current_tags = set(row['tags'].split(',') if row['tags'] else [])
+    if add_tags:
+        current_tags.update([t.strip() for t in add_tags.split(',')])
+    if remove_tags:
+        for t in remove_tags.split(','):
+            current_tags.discard(t.strip())
+            
+    new_tags_str = ','.join(sorted(filter(None, current_tags)))
+    c.execute("UPDATE analysis_history SET tags=? WHERE id=?", (new_tags_str, entry_id))
+    conn.commit()
+    conn.close()
+    print(f"[DB] Updated tags for ID {entry_id}: {new_tags_str}")
+    return True
+
+def main():
+    parser = argparse.ArgumentParser(description="Manage the analysis history database.")
+    subparsers = parser.add_subparsers(dest='command', help='Command to execute')
+
+    # Init command
+    subparsers.add_parser('init', help='Initialize the database')
+
+    # Get command
+    get_parser = subparsers.add_parser('get', help='Get cached response')
+    get_parser.add_argument('diff_hash', help='Hash of the diff')
+    get_parser.add_argument('prompt_hash', help='Hash of the prompt')
+    get_parser.add_argument('model', help='Model name')
+
+    # Save command
+    save_parser = subparsers.add_parser('save', help='Save analysis result')
+    save_parser.add_argument('--diff-hash', required=True)
+    save_parser.add_argument('--prompt-hash', required=True)
+    save_parser.add_argument('--model', required=True)
+    save_parser.add_argument('--response', required=True)
+    save_parser.add_argument('--cost', type=float, default=0.0)
+    save_parser.add_argument('--repo-name')
+    save_parser.add_argument('--summary')
+    save_parser.add_argument('--tags')
+    save_parser.add_argument('--entry-type', default='review')
+
+    # Get Context command
+    context_parser = subparsers.add_parser('get-context', help='Get context for a repo')
+    context_parser.add_argument('repo_name')
+    context_parser.add_argument('--limit', type=int, default=3)
+    context_parser.add_argument('--search')
+
+    # Tag command
+    tag_parser = subparsers.add_parser('tag', help='Update tags')
+    tag_parser.add_argument('entry_id', type=int)
+    tag_parser.add_argument('--add')
+    tag_parser.add_argument('--remove')
+
+    # Search command (new, exposed from get_context logic)
+    search_parser = subparsers.add_parser('search', help='Search history')
+    search_parser.add_argument('repo_name')
+    search_parser.add_argument('query')
+    search_parser.add_argument('--limit', type=int, default=5)
+
+    args = parser.parse_args()
+
+    if args.command == 'init':
+        init_db()
+    elif args.command == 'get':
+        res = get_cache(args.diff_hash, args.prompt_hash, args.model)
         if res:
             print(res)
-            sys.exit(0) # Success
         else:
-            sys.exit(1) # Not found
-            
-    elif cmd == 'get-context':
-        if len(sys.argv) < 3:
-            print("Usage: db_manager.py get-context <repo_name> [limit]")
             sys.exit(1)
-        repo = sys.argv[2]
-        limit = int(sys.argv[3]) if len(sys.argv) > 3 else 3
-        ctx = get_context(repo, limit)
-        print(json.dumps(ctx))
-            
-    elif cmd == 'save':
-        # Updated signature: save <diff_hash> <prompt_hash> <model> <response_file> <cost> [repo_name]
-        if len(sys.argv) < 7:
-            print("Usage: db_manager.py save <diff_hash> <prompt_hash> <model> <response_file> <cost> [repo_name]")
-            sys.exit(1)
-        
+    elif args.command == 'save':
+        response_content = args.response
+        # Try to read as file if it looks like a path
         try:
-            with open(sys.argv[5], 'r', encoding='utf-8') as f:
-                response = f.read()
-        except FileNotFoundError:
-            print(f"[ERROR] Response file not found: {sys.argv[5]}")
-            sys.exit(1)
+            if os.path.exists(args.response):
+                with open(args.response, 'r', encoding='utf-8') as f:
+                    response_content = f.read()
+        except OSError:
+            pass
             
-        repo_name = sys.argv[7] if len(sys.argv) > 7 else None
-        save_cache(sys.argv[2], sys.argv[3], sys.argv[4], response, float(sys.argv[6]), repo_name)
-        
+        save_cache(args.diff_hash, args.prompt_hash, args.model, response_content, 
+                   args.cost, args.repo_name, args.summary, args.tags, args.entry_type)
+    elif args.command == 'get-context':
+        ctx = get_context(args.repo_name, args.limit, args.search)
+        print(json.dumps(ctx, indent=2))
+    elif args.command == 'tag':
+        update_tags(args.entry_id, args.add, args.remove)
+    elif args.command == 'search':
+        ctx = get_context(args.repo_name, args.limit, args.query)
+        print(json.dumps(ctx, indent=2))
     else:
-        print(f"Unknown command: {cmd}")
-        sys.exit(1)
+        parser.print_help()
+
+if __name__ == '__main__':
+    main()

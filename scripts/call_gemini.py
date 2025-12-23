@@ -15,25 +15,43 @@ def get_client(api_key=None):
         raise ValueError("GEMINI_API_KEY not found in environment")
     return genai.Client(api_key=key)
 
-def count_tokens(prompt: str, client=None):
+def list_models(client=None):
     if client is None:
         client = get_client()
     try:
-        response = client.models.count_tokens(model=MODEL, contents=prompt)
+        # Filter for generateContent capable models if possible, or just return all
+        # For now, we'll return all and let the user pick, or filter by 'gemini'
+        models = []
+        for m in client.models.list():
+            if 'gemini' in m.name:
+                models.append(m.name.replace('models/', ''))
+        return sorted(models)
+    except Exception as e:
+        print(f"[WARN] Failed to list models: {e}", file=sys.stderr)
+        return []
+
+def count_tokens(prompt: str, client=None, model=None):
+    if client is None:
+        client = get_client()
+    target_model = model or MODEL
+    try:
+        response = client.models.count_tokens(model=target_model, contents=prompt)
         return response.total_tokens
     except Exception as e:
         raise RuntimeError(f"Token counting failed: {e}")
 
-def call_with_retry(prompt: str, client=None) -> str:
+def call_with_retry(prompt: str, client=None, model=None) -> str:
     if not prompt.strip():
         raise ValueError("Empty prompt")
     
     if client is None:
         client = get_client()
     
+    target_model = model or MODEL
+    
     for attempt in range(MAX_RETRIES):
         try:
-            response = client.models.generate_content(model=MODEL, contents=prompt)
+            response = client.models.generate_content(model=target_model, contents=prompt)
             return response.text
         except exceptions.InvalidArgument as e:
             raise ValueError(f"Invalid Argument (prompt issue?): {e}")

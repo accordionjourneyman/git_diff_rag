@@ -84,3 +84,13 @@ graph TD
 ### 4. LLM Integration (`scripts/call_gemini.py`)
 - **Gemini**: Direct API integration with retry logic and rate limit handling.
 - **Copilot**: Fallback mode that copies the prompt to the clipboard for manual use.
+
+### 5. Intelligence Loop
+- **Critic Verification**: A secondary pass that cross-references the LLM's output with previous analyses and external signals to ensure consistency and accuracy.
+- **Session Summarizer**: Extracts "Lessons Learned" from agent sessions and stores them in the database, improving the repository's long-term memory.
+- **Signal Processing**: `scripts/signal_processor.py` handles the ingestion of external signals (e.g., linter results, test failures) to enrich the context.
+
+### 6. Review Cockpit (`cockpit/app.py`)
+- **UI Layer**: A Streamlit application that provides a visual interface for the entire system.
+- **State Management**: Handles session state for active bundles, selected files, and execution progress.
+- **Integration**: Directly imports core Python modules (`ui_utils`, `config_utils`, `db_manager`) to ensure feature parity with the CLI.

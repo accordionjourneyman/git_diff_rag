@@ -89,7 +89,13 @@ test_extract:
             )
             
             assert result.returncode == 0
-            assert "Copilot workflow" in result.stdout
+            # Extract output dir from stdout
+            import re
+            match = re.search(r"Workflow Completed: (output/\S+)", result.stdout)
+            assert match, f"Could not find output dir in stdout: {result.stdout}"
+            res_file = PROJECT_ROOT / match.group(1) / "llm_result.md"
+            assert res_file.exists()
+            assert "Copilot workflow" in res_file.read_text()
             
         finally:
             if config_path.exists():
@@ -106,7 +112,9 @@ class TestCLIHelp:
         assert result.returncode == 0
         assert "USAGE:" in result.stdout
         assert "--repo" in result.stdout
-        assert "--workflow" in result.stdout
+        assert "--mode" in result.stdout
+        assert "--agent" in result.stdout
+        assert "--apply" in result.stdout
         assert "EXAMPLES:" in result.stdout
     
     def test_short_help_flag(self):
@@ -116,3 +124,20 @@ class TestCLIHelp:
         )
         assert result.returncode == 0
         assert "Git Diff RAG" in result.stdout
+    
+    def test_agent_dry_run(self, mock_git_repo, tmp_path):
+        repo_name = "test_agent_dry_run"
+        config_path = PROJECT_ROOT / "repository-setup" / f"{repo_name}.md"
+        config_path.write_text(f"""---\npath: {mock_git_repo}\ndefault_workflow: review\n---""")
+        
+        try:
+            result = subprocess.run(
+                [str(PROJECT_ROOT / "scripts" / "New-Bundle.sh"), "--repo", repo_name, "--mode", "agent", "--dry-run", "--target", "HEAD"],
+                cwd=PROJECT_ROOT,
+                capture_output=True, text=True
+            )
+            assert result.returncode == 0
+            assert "Mode: agent" in result.stdout
+            assert "Agent: gemini" in result.stdout
+        finally:
+            if config_path.exists(): config_path.unlink()

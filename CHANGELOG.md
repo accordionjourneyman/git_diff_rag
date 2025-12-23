@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.2.0] - 2025-12-23 - Intelligence Loop & Recipe Expansion
+
+### Features
+- **New Recipes**: Added `architectural_review`, `github_readiness`, and `test_coverage_advisor` recipes to enhance code quality and documentation practices.
+- **Critic Verification**: Implemented a critic verification pass to cross-reference code changes with previous analyses and external signals.
+- **Session Summarizer**: Added a summarizer for extracting lessons learned from AI agent sessions, improving long-term memory for repository insights.
+- **Signal Processing**: Enhanced signal processing and documentation loading scripts for better integration and usability.
+- **Repo Config Utils**: Created utility functions for managing repository configurations and workflows.
+
+### Testing
+- **Comprehensive Tests**: Developed comprehensive test cases for signal processing, documentation loading, and intelligence loop functionalities.
+
 ## [2.1.0] - 2025-12-21 - Context Awareness & Smart Caching
 
 ### Features

@@ -1,0 +1,18 @@
+deprecations:
+  - pattern: 'eval\('
+    reason: "Severe security risk. Use safe alternatives like json.loads() or proper parsing."
+    replacement: "ast.literal_eval()"
+  - pattern: 'os\.system\('
+    reason: "Subprocess is more secure and flexible."
+    replacement: "subprocess.run()"
+  - pattern: 'print\('
+    reason: "Use logging module for production-grade output."
+    replacement: "logger.info()"
+
+dependencies:
+  - trigger_file_pattern: 'app\.py'
+    required_file_pattern: 'ui_utils\.py'
+    reason: "Changes to the main app often require corresponding utility updates."
+  - trigger_file_pattern: 'checker_engine\.py'
+    required_file_pattern: 'global_rules\.yaml'
+    reason: "Engine changes usually imply rule updates."

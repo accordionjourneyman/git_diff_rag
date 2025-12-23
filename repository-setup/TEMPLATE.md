@@ -32,6 +32,9 @@ workflows:
   - pr_review
   - comprehensive
   - explain_diff
+  - architectural_review
+  - github_readiness
+  - test_coverage_advisor
 
 # Workflow: PR Review (Gemini)
 # Uses Gemini API for code review.
@@ -44,6 +47,24 @@ pr_review:
 # 360-degree review using the Prompt Library.
 comprehensive:
   prompt: prompts/recipes/comprehensive_review.md
+  llm: gemini
+  model: "gemini-3-flash-preview"
+
+# Workflow: Architectural Review
+architectural_review:
+  prompt: prompts/recipes/architectural_review.md
+  llm: gemini
+  model: "gemini-3-flash-preview"
+
+# Workflow: GitHub Readiness
+github_readiness:
+  prompt: prompts/recipes/github_readiness.md
+  llm: gemini
+  model: "gemini-3-flash-preview"
+
+# Workflow: Test Coverage Advisor
+test_coverage_advisor:
+  prompt: prompts/recipes/test_coverage_advisor.md
   llm: gemini
   model: "gemini-3-flash-preview"
 

@@ -17,7 +17,28 @@ A robust, repository-driven "Context Engine" that transforms Git diffs into acti
     - **Secret Scanning**: Pre-flight regex scan for potential secrets in the diff.
     - **Dry Run**: Validate templates and token counts without spending API credits.
 
-## 🚀 Quick Start
+## 🎛️ Review Cockpit (GUI)
+
+Prefer a visual interface? The **Review Cockpit** lets you manage everything from the browser.
+
+```bash
+streamlit run cockpit/app.py
+```
+
+- **Visual Diff**: Browse changes and see security alerts.
+- **Prompt Builder**: Drag-and-drop recipes and snippets to compose custom workflows.
+- **Editor**: Edit prompts with a VS Code-like experience.
+- **History**: Browse past runs and database logs.
+
+[👉 Read the full Cockpit Documentation](docs/COCKPIT.md)
+
+## � Documentation
+
+- [**Architecture**](docs/ARCHITECTURE.md): High-level design and data flow.
+- [**Cockpit Guide**](docs/COCKPIT.md): How to use the GUI.
+- [**Tools Reference**](docs/TOOLS.md): CLI scripts and Python modules.
+
+## �🚀 Quick Start
 
 ### 1. Setup
 ```bash
@@ -98,6 +119,9 @@ Define specific workflows in the frontmatter:
 workflows:
   - pr_review
   - agentic_map
+  - architectural_review
+  - github_readiness
+  - test_coverage_advisor
 
 pr_review:
   prompt: "prompts/recipes/standard_pr_review.md"
@@ -106,6 +130,21 @@ pr_review:
 
 agentic_map:
   prompt: "prompts/recipes/agentic_workspace_map.md"
+  llm: "gemini"
+  model: "gemini-3-flash-preview"
+
+architectural_review:
+  prompt: "prompts/recipes/architectural_review.md"
+  llm: "gemini"
+  model: "gemini-3-flash-preview"
+
+github_readiness:
+  prompt: "prompts/recipes/github_readiness.md"
+  llm: "gemini"
+  model: "gemini-3-flash-preview"
+
+test_coverage_advisor:
+  prompt: "prompts/recipes/test_coverage_advisor.md"
   llm: "gemini"
   model: "gemini-3-flash-preview"
 

@@ -26,7 +26,7 @@ def detect_languages(diff_text):
     
     return list(languages) if languages else ['unknown']
 
-def render_template(template_path, diff_content, repo_name="unknown", context_data=None, env_vars=None):
+def render_template(template_path, diff_content, repo_name="unknown", context_data=None, signals_data=None, docs_data=None, findings_data=None, env_vars=None, inject_diff_content=True):
     if env_vars is None:
         env_vars = os.environ
 
@@ -35,8 +35,7 @@ def render_template(template_path, diff_content, repo_name="unknown", context_da
     repo_root = os.path.dirname(script_dir)
     prompts_dir = os.path.join(repo_root, 'prompts')
 
-    # Init Jinja2 with loader for relative includes (e.g. {% include 'macros/_common.md' %})
-    # We search in prompts_dir explicitly so 'macros/' works.
+    # Init Jinja2 with loader
     env = Environment(loader=FileSystemLoader([prompts_dir, repo_root, os.getcwd()]))
 
     # Config extraction
@@ -44,20 +43,22 @@ def render_template(template_path, diff_content, repo_name="unknown", context_da
     code_langs = detect_languages(diff_content) if code_lang_config == 'auto' else [code_lang_config]
 
     provided = {
-        "DIFF_CONTENT": diff_content,
+        "DIFF_CONTENT": diff_content if inject_diff_content else "<!-- Diff provided in Shared Context -->",
         "REPO_NAME": repo_name,
         "BUNDLE_PATH": env_vars.get('BUNDLE_PATH', 'unknown'),
         "CODE_LANGS": code_langs,
-        "CODE_LANG": code_langs[0] if code_langs else 'text', # For legacy macros using single string
+        "CODE_LANG": code_langs[0] if code_langs else 'text',
         "ANSWER_LANG": env_vars.get('ANSWER_LANGUAGE', 'english'),
         "COMMENT_LANG": env_vars.get('COMMENT_LANGUAGE', 'english'),
         "OUTPUT_FORMAT": env_vars.get('OUTPUT_FORMAT', 'markdown'),
-        "CONTEXT": context_data or []
+        "CONTEXT": context_data or [],
+        "SIGNALS": signals_data or [],
+        "DOCS": docs_data or [],
+        "FINDINGS": findings_data or []
     }
 
     # Load Template
     if os.path.exists(template_path):
-        # env.from_string(src) renders using the env's loader for includes
         try:
             with open(template_path, 'r', encoding='utf-8') as f:
                 template_src = f.read()
@@ -67,51 +68,47 @@ def render_template(template_path, diff_content, repo_name="unknown", context_da
     else:
         raise FileNotFoundError(f"Template file not found: {template_path}")
 
-    # Introspection (Validation Gate)
     try:
-        ast = env.parse(template_src)
-        required_vars = meta.find_undeclared_variables(ast)
-        # Filter out vars that are provided
-        missing = [v for v in required_vars if v not in provided]
-
-        if missing:
-            # We don't fail hard on missing vars anymore, as templates might use optional vars
-            # But we can warn or just let Jinja handle it (undefined)
-            pass
-            
         return template.render(**provided)
-    except ValueError:
-        raise
     except Exception as e:
         raise RuntimeError(f"Render failed: {e}")
 
 def main():
     if len(sys.argv) < 3:
-        print("Usage: render_prompt.py <template_file> <diff_file> [repo_name] [context_file]")
+        print("Usage: render_prompt.py <template_file> <diff_file> [repo_name] [context_file] [signals_file] [docs_file] [findings_file]")
         sys.exit(1)
 
     template_path = sys.argv[1]
     diff_file = sys.argv[2]
     repo_name = sys.argv[3] if len(sys.argv) > 3 else "unknown"
     context_file = sys.argv[4] if len(sys.argv) > 4 else None
+    signals_file = sys.argv[5] if len(sys.argv) > 5 else None
+    docs_file = sys.argv[6] if len(sys.argv) > 6 else None
+    findings_file = sys.argv[7] if len(sys.argv) > 7 else None
 
-    # Read Context
+    # Read Diff
     try:
         with open(diff_file, 'r', encoding='utf-8') as f:
             diff_content = f.read()
     except FileNotFoundError:
-        diff_content = diff_file # fallback for raw string arg
+        diff_content = diff_file
 
-    context_data = []
-    if context_file and os.path.exists(context_file):
-        try:
-            with open(context_file, 'r', encoding='utf-8') as f:
-                context_data = json.load(f)
-        except Exception as e:
-            print(f"[WARN] Failed to load context file: {e}", file=sys.stderr)
+    def load_json(path):
+        if path and os.path.exists(path):
+            try:
+                with open(path, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+            except Exception as e:
+                print(f"[WARN] Failed to load {path}: {e}", file=sys.stderr)
+        return []
+
+    context_data = load_json(context_file)
+    signals_data = load_json(signals_file)
+    docs_data = load_json(docs_file)
+    findings_data = load_json(findings_file)
 
     try:
-        result = render_template(template_path, diff_content, repo_name, context_data)
+        result = render_template(template_path, diff_content, repo_name, context_data, signals_data, docs_data, findings_data)
         print(result)
     except Exception as e:
         print(f"[ERROR] {e}")
