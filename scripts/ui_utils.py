@@ -97,12 +97,13 @@ def get_file_content(repo_path, ref, file_path):
             ["git", "-C", repo_path, "show", f"{ref}:{file_path}"],
             capture_output=True, text=True, check=True
         )
-        return result.stdout
+        # Normalize line endings to LF to avoid false positives in diff viewers
+        return result.stdout.replace('\r\n', '\n')
     except Exception:
         # Fallback to direct disk read if git show fails (e.g. for untracked files or HEAD relative paths)
         try:
             with open(os.path.join(repo_path, file_path), 'r') as f:
-                return f.read()
+                return f.read().replace('\r\n', '\n')
         except:
             return ""
 
