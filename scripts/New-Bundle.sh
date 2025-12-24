@@ -1,20 +1,39 @@
 #!/usr/bin/env bash
+# ============================================================================
+# Git Diff RAG - Bash Wrapper (DEPRECATED)
+# ============================================================================
+# 
+# ⚠️  DEPRECATION NOTICE:
+# This bash script is deprecated and maintained only for backward compatibility.
+# Please use the new Python CLI instead:
+# 
+#   python cli.py analyze --repo <repo_name> [OPTIONS]
+# 
+# The Python CLI provides:
+#   - Cross-platform support (Windows, macOS, Linux)
+#   - Better error messages and debugging
+#   - Direct Python integration (no subprocess overhead)
+#   - Easier testing and maintenance
+# 
+# This script now delegates to the Python CLI.
+# ============================================================================
+
 set -euo pipefail
 
-# ============================================================================
-# Git Diff RAG - Main Orchestrator
-# ============================================================================
-
-# Auto-activate venv
+# Get script directory
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
-PYTHON_CMD="python3"
 
+# Find Python
+PYTHON_CMD="python3"
 if [[ -f "$PROJECT_ROOT/.venv/bin/python3" ]]; then
     PYTHON_CMD="$PROJECT_ROOT/.venv/bin/python3"
 elif [[ -f "$PROJECT_ROOT/venv/bin/python3" ]]; then
     PYTHON_CMD="$PROJECT_ROOT/venv/bin/python3"
 fi
+
+# Delegate to Python CLI
+exec "$PYTHON_CMD" "$PROJECT_ROOT/cli.py" analyze "$@"
 
 show_help() {
     cat << 'EOF'

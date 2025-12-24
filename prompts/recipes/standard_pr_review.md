@@ -1,3 +1,8 @@
+---
+description: Standard Pull Request review focusing on bugs, security, and quality.
+tags: [review, standard, pr]
+---
+
 {% include 'macros/_common.md' %}
 
 <!-- NOTE: Verify model-specific context window and output-format behavior when changing the `model` in repository setup. -->

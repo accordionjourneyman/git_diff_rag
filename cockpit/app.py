@@ -11,9 +11,57 @@ from datetime import datetime
 # Add root to path for script imports
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from scripts import ui_utils, config_utils, db_manager
+from cockpit.components import file_tree, diff_viewer
 from streamlit_code_diff import st_code_diff
 from streamlit_monaco import st_monaco
+import streamlit_antd_components as sac
 from scripts.render_prompt import render_template
+
+# Token estimation constants
+TOKEN_THRESHOLD = 100000  # Warn when context exceeds this
+CHARS_PER_TOKEN = 4  # Rough estimate
+
+def estimate_tokens(text: str) -> int:
+    """Rough token estimate based on character count."""
+    return len(text) // CHARS_PER_TOKEN if text else 0
+
+def summarize_with_gemini(content: str, content_type: str = "diff") -> str:
+    """Use Gemini API to summarize large content for context optimization.
+    
+    Args:
+        content: The content to summarize (diff or commit history)
+        content_type: Either 'diff' or 'commits'
+        
+    Returns:
+        Summarized content string
+    """
+    try:
+        from scripts.llm_strategy import get_provider
+        provider = get_provider("gemini")
+        
+        if content_type == "diff":
+            prompt = f"""Summarize this git diff into a concise overview (max 2000 chars).
+Focus on: what files changed, key modifications, and overall intent.
+
+```diff
+{content[:50000]}
+```
+
+Provide a structured summary:
+1. Files Changed (bullet list)
+2. Key Modifications (grouped by area)
+3. Overall Intent (1-2 sentences)"""
+        else:  # commit history
+            prompt = f"""Summarize these commit messages into a coherent narrative (max 1000 chars).
+Focus on: the progression of work, key milestones, and overall direction.
+
+{content[:20000]}
+
+Provide a narrative summary capturing the developer's journey."""
+        
+        return provider.call(prompt, model="gemini-2.0-flash-exp")
+    except Exception as e:
+        return f"[Summarization failed: {str(e)}]"
 
 # Page Config
 st.set_page_config(
@@ -41,8 +89,11 @@ st.markdown("""
     .lego-tag { font-size: 0.7em; padding: 2px 6px; border-radius: 10px; background: #30363d; color: #8b949e; margin-right: 8px; }
     
     .status-bar { padding: 8px 20px; background: #161b22; border-top: 1px solid #30363d; position: fixed; bottom: 0; left: 0; width: 100%; color: #8b949e; z-index: 1000; font-family: monospace; font-size: 0.85em; }
-    .hero-btn>button { background: linear-gradient(135deg, #238636, #2ea043) !important; color: white !important; height: 3.5rem !important; font-size: 1.1em !important; font-weight: 600 !important; border: none !important; border-radius: 8px !important; box-shadow: 0 4px 15px rgba(35, 134, 54, 0.3); }
-    
+    .hero-btn>button { background: linear-gradient(135deg, #1f6feb, #58a6ff) !important; color: white !important; height: 3.5rem !important; font-size: 1.2em !important; font-weight: 700 !important; border: none !important; border-radius: 8px !important; box-shadow: 0 4px 20px rgba(31, 111, 235, 0.4) !important; transition: all 0.3s !important; }
+    .hero-btn>button:hover { transform: translateY(-2px) !important; box-shadow: 0 6px 25px rgba(31, 111, 235, 0.6) !important; }
+    .status-indicator { display: inline-block; padding: 6px 14px; background: #21262d; border: 1px solid #30363d; border-radius: 20px; font-size: 0.9em; color: #8b949e; font-weight: 500; }
+    .status-indicator.ready { border-color: #238636; color: #2ea043; }
+    .compact-select { margin-bottom: 0.5rem; }
     /* Mermaid Styles Override */
     .mermaid { background: transparent !important; }
     .timer-badge { font-family: monospace; background: #30363d; color: #58a6ff; padding: 2px 6px; border-radius: 4px; font-size: 0.9em; }
@@ -62,60 +113,220 @@ if 'is_executing' not in st.session_state: st.session_state.is_executing = False
 if 'current_step' not in st.session_state: st.session_state.current_step = None
 if 'completed_steps' not in st.session_state: st.session_state.completed_steps = []
 if 'execution_times' not in st.session_state: st.session_state.execution_times = {}
+if 'show_advanced' not in st.session_state: st.session_state.show_advanced = False
+if 'show_advanced' not in st.session_state: st.session_state.show_advanced = False
+if 'setup_complete' not in st.session_state: st.session_state.setup_complete = False
+if 'execution_result' not in st.session_state: st.session_state.execution_result = None
+if 'show_results' not in st.session_state: st.session_state.show_results = False
+if 'tool_choice' not in st.session_state: st.session_state.tool_choice = "GitHub Copilot CLI"
+if 'model_choice' not in st.session_state: st.session_state.model_choice = "gpt-4"
+# Summarization state
+if 'use_summarized' not in st.session_state: st.session_state.use_summarized = False
+if 'summarized_diff' not in st.session_state: st.session_state.summarized_diff = None
+if 'summarized_commits' not in st.session_state: st.session_state.summarized_commits = None
+if 'commit_search' not in st.session_state: st.session_state.commit_search = ""
 
-# --- Auto-Logic & Smart Refs ---
+# --- Auto-Detection & Error Handling ---
 repos = ui_utils.list_repositories()
-if not st.session_state.repo and repos:
-    st.session_state.repo = repos[0]
+
+# Auto-detect current repo if not set, or if current repo is invalid
+if not st.session_state.repo or st.session_state.repo not in repos:
+    if repos:
+        st.session_state.repo = repos[0]
+        st.session_state.setup_complete = True
+    else:
+        st.session_state.setup_complete = False
+
+if not st.session_state.setup_complete:
+    # Show setup wizard
+    st.error("⚠️ No repository configuration found")
+    st.markdown("""
+    ### Let's Get Started
+    
+    To use the Git Diff RAG Cockpit, you need to configure at least one repository.
+    
+    **Quick Setup:**
+    1. Go to the **⚙️ Settings** tab
+    2. Click **"+ Add New"** under Repositories
+    3. Fill in the repository details (name, path, main branch)
+    4. Click **"💾 Save Configuration"**
+    
+    **Need Help?** Check the [Setup Guide](../docs/COCKPIT.md) for detailed instructions.
+    """)
+    st.stop()
 
 config = config_utils.load_repo_config(st.session_state.repo)
 repo_path = config.get('path', '.') if config else '.'
-branches = ui_utils.get_branches(repo_path)
 
-# --- TOP BAR: Targeting (Including Specific Commits) ---
-with st.container():
-    c_repo, c_target, c_source = st.columns([2, 2, 2])
+# Validate repo path
+try:
+    result = subprocess.run(["git", "-C", repo_path, "rev-parse", "--git-dir"], 
+                          capture_output=True, text=True, check=True)
+    branches = ui_utils.get_branches(repo_path)
     
-    with c_repo:
-        new_repo = st.selectbox("🎯 Repository", options=repos, index=repos.index(st.session_state.repo) if st.session_state.repo in repos else 0)
+    # Auto-detect main branch if default doesn't exist
+    if st.session_state.target not in branches:
+        if "main" in branches:
+            st.session_state.target = "main"
+        elif "master" in branches:
+            st.session_state.target = "master"
+        elif branches:
+            st.session_state.target = branches[0]
+except (subprocess.CalledProcessError, FileNotFoundError):
+    st.error(f"⚠️ Invalid repository path: `{repo_path}`")
+    st.markdown("""
+    The configured repository path is not a valid git repository.
+    
+    **To fix this:**
+    1. Go to **⚙️ Settings** tab
+    2. Update the **Local Path** for `{}`
+    3. Make sure it points to a valid git repository
+    """.format(st.session_state.repo))
+    st.stop()
+
+# --- HEADER ---
+with st.container():
+    h_col1, h_col2 = st.columns([0.8, 8], gap="small")
+    with h_col1:
+        if os.path.exists("cockpit/assets/logo.png"):
+            st.image("cockpit/assets/logo.png", width=72)
+        else:
+            st.markdown("<h1>🤖</h1>", unsafe_allow_html=True)
+    with h_col2:
+        st.markdown('<h1 style="margin-top:0; padding-top:10px;">Git Diff RAG <span style="font-size:0.5em; color:#8b949e; font-weight:normal;">/ Cockpit</span></h1>', unsafe_allow_html=True)
+
+# --- COMPACT TOP BAR ---
+with st.container():
+    col1, col2, col3, col4 = st.columns([2, 2, 2, 0.8])
+    
+    with col1:
+        new_repo = st.selectbox("📦 Repository", options=repos, 
+                               index=repos.index(st.session_state.repo) if st.session_state.repo in repos else 0,
+                               key="repo_select")
         if new_repo != st.session_state.repo:
             st.session_state.repo = new_repo
             st.session_state.selected_file = None
             st.rerun()
 
-    # Target Selection (Branch + Commit)
-    with c_target:
-        new_target = st.selectbox("📍 Target (Base)", options=branches, index=branches.index(st.session_state.target) if st.session_state.target in branches else 0)
+    with col2:
+        new_target = st.selectbox("📍 Compare Against", options=branches, 
+                                 index=branches.index(st.session_state.target) if st.session_state.target in branches else 0,
+                                 key="target_select")
         if new_target != st.session_state.target:
             st.session_state.target = new_target
             st.session_state.target_commit = None
             st.rerun()
-        
-        target_commits = ui_utils.get_commits(repo_path, st.session_state.target)
-        target_commit_opts = ["Current HEAD"] + [c['hash'] for c in target_commits]
-        st.caption("Commit (Optional)")
-        new_target_commit = st.selectbox("Target Commit", options=target_commit_opts, index=0 if not st.session_state.target_commit else target_commit_opts.index(st.session_state.target_commit) if st.session_state.target_commit in target_commit_opts else 0, label_visibility="collapsed")
-        st.session_state.target_commit = new_target_commit if new_target_commit != "Current HEAD" else None
 
-    # Source Selection (Branch + Commit)
-    with c_source:
+    with col3:
         source_opts = ["Working Directory"] + branches
-        new_source = st.selectbox("🌱 Source (Feature)", options=source_opts, index=source_opts.index(st.session_state.source) if st.session_state.source in source_opts else (2 if len(branches) > 1 else 0))
+        new_source = st.selectbox("✨ Your Changes", options=source_opts, 
+                                 index=source_opts.index(st.session_state.source) if st.session_state.source in source_opts else 0,
+                                 key="source_select")
         if new_source != st.session_state.source:
             st.session_state.source = new_source
             st.session_state.source_commit = None
             st.rerun()
-            
-        if st.session_state.source != "Working Directory":
-            source_commits = ui_utils.get_commits(repo_path, st.session_state.source)
-            source_commit_opts = ["Current HEAD"] + [c['hash'] for c in source_commits]
-            st.caption("Commit (Optional)")
-            new_source_commit = st.selectbox("Source Commit", options=source_commit_opts, index=0 if not st.session_state.source_commit else source_commit_opts.index(st.session_state.source_commit) if st.session_state.source_commit in source_commit_opts else 0, label_visibility="collapsed")
-            st.session_state.source_commit = new_source_commit if new_source_commit != "Current HEAD" else None
-        else:
-            st.session_state.source_commit = None
+    
+    with col4:
+        # Invisible header to align the Advanced button vertically with the selects
+        st.markdown("<p style='padding-top: 12px;'></p>", unsafe_allow_html=True)
+        if st.button("⚙️ Advanced", use_container_width=True):
+            st.session_state.show_advanced = not st.session_state.show_advanced
+            st.rerun()
 
-st.divider()
+# Advanced Options (Collapsed by Default)
+if st.session_state.show_advanced:
+    with st.expander("🔧 Advanced Options", expanded=True):
+        # Helper function for commit display
+        def format_commit_option(commit: dict) -> str:
+            """Format commit for dropdown: 'abc1234 • Dec 23 • @author • Fix login bug'"""
+            short_hash = commit['hash'][:7]
+            date_str = commit.get('date', '').split()[0] if commit.get('date') else ''
+            try:
+                from datetime import datetime
+                date_obj = datetime.strptime(date_str, '%Y-%m-%d')
+                date_display = date_obj.strftime('%b %d')
+            except:
+                date_display = date_str[:10] if date_str else '?'
+            author = commit.get('author', 'unknown').split()[0][:10]
+            subject = commit.get('message', '')[:35]
+            if len(commit.get('message', '')) > 35:
+                subject += '...'
+            return f"{short_hash} • {date_display} • @{author} • {subject}"
+        
+        adv_col1, adv_col2 = st.columns(2)
+        
+        with adv_col1:
+            st.markdown("**Compare Against - Specific Commit**")
+            target_commits = ui_utils.get_commits(repo_path, st.session_state.target)
+            
+            # Search filter
+            target_search = st.text_input("🔍 Filter", placeholder="hash, author, or message...", key="target_commit_search")
+            
+            # Filter commits
+            filtered_target = target_commits
+            if target_search:
+                search_lower = target_search.lower()
+                filtered_target = [c for c in target_commits if (
+                    search_lower in c['hash'].lower() or 
+                    search_lower in c.get('author', '').lower() or 
+                    search_lower in c.get('message', '').lower()
+                )]
+            
+            # Build display options
+            target_commit_opts = ["Current HEAD"] + [format_commit_option(c) for c in filtered_target]
+            label_to_hash_target = {format_commit_option(c): c['hash'] for c in filtered_target}
+            hash_to_label_target = {c['hash']: format_commit_option(c) for c in filtered_target}
+            
+            current_label = "Current HEAD"
+            if st.session_state.target_commit and st.session_state.target_commit in hash_to_label_target:
+                current_label = hash_to_label_target[st.session_state.target_commit]
+            
+            selected_label = st.selectbox("Target Commit", options=target_commit_opts,
+                index=target_commit_opts.index(current_label) if current_label in target_commit_opts else 0,
+                label_visibility="collapsed", key="target_commit_select")
+            
+            st.session_state.target_commit = label_to_hash_target.get(selected_label) if selected_label != "Current HEAD" else None
+            
+            if target_search:
+                st.caption(f"Showing {len(filtered_target)} of {len(target_commits)} commits")
+        
+        with adv_col2:
+            if st.session_state.source != "Working Directory":
+                st.markdown("**Your Changes - Specific Commit**")
+                source_commits = ui_utils.get_commits(repo_path, st.session_state.source)
+                
+                # Search filter
+                source_search = st.text_input("🔍 Filter", placeholder="hash, author, or message...", key="source_commit_search")
+                
+                # Filter commits
+                filtered_source = source_commits
+                if source_search:
+                    search_lower = source_search.lower()
+                    filtered_source = [c for c in source_commits if (
+                        search_lower in c['hash'].lower() or 
+                        search_lower in c.get('author', '').lower() or 
+                        search_lower in c.get('message', '').lower()
+                    )]
+                
+                source_commit_opts = ["Current HEAD"] + [format_commit_option(c) for c in filtered_source]
+                label_to_hash_source = {format_commit_option(c): c['hash'] for c in filtered_source}
+                hash_to_label_source = {c['hash']: format_commit_option(c) for c in filtered_source}
+                
+                current_source_label = "Current HEAD"
+                if st.session_state.source_commit and st.session_state.source_commit in hash_to_label_source:
+                    current_source_label = hash_to_label_source[st.session_state.source_commit]
+                
+                selected_source = st.selectbox("Source Commit", options=source_commit_opts,
+                    index=source_commit_opts.index(current_source_label) if current_source_label in source_commit_opts else 0,
+                    label_visibility="collapsed", key="source_commit_select")
+                
+                st.session_state.source_commit = label_to_hash_source.get(selected_source) if selected_source != "Current HEAD" else None
+                
+                if source_search:
+                    st.caption(f"Showing {len(filtered_source)} of {len(source_commits)} commits")
+            else:
+                st.session_state.source_commit = None
 
 # Final Resolved Refs for Engine
 actual_target, actual_source, _is_direct = ui_utils.get_smart_refs(repo_path, st.session_state.target, st.session_state.source, st.session_state.target_commit, st.session_state.source_commit)
@@ -124,269 +335,423 @@ changed_files = ui_utils.get_changed_files(repo_path, st.session_state.target, s
 if changed_files and not st.session_state.selected_file:
     st.session_state.selected_file = changed_files[0]
 
-# --- MAIN LAYOUT ---
-# Master Navigation Tabs
-tab_review, tab_compose, tab_analyze, tab_history, tab_editor, tab_settings = st.tabs(["🔍 Review Changes", "🧱 Compose Prompt", "🚀 Run Analysis", "📜 History", "📝 Editor", "⚙️ Settings"])
+# Status Indicator
+if changed_files:
+    total_diff = ui_utils.get_diff(repo_path, actual_target, actual_source, target_commit=st.session_state.target_commit, source_commit=st.session_state.source_commit)
+    lines_added = total_diff.count('\n+')
+    lines_removed = total_diff.count('\n-')
+    st.markdown(f'<span class="status-indicator ready">🟢 {len(changed_files)} files • +{lines_added} -{lines_removed} lines</span>', unsafe_allow_html=True)
+    
+    # Token Estimation
+    estimated_tokens = estimate_tokens(total_diff)
+    if estimated_tokens > TOKEN_THRESHOLD:
+        st.warning(f"⚠️ Large diff detected: ~{estimated_tokens:,} tokens. Consider using Summarize.")
+        sum_col1, sum_col2 = st.columns([1, 3])
+        with sum_col1:
+            if st.button("⚡ Summarize", help="Use Gemini API to optimize context for large diffs"):
+                with st.spinner("Summarizing with Gemini API..."):
+                    st.session_state.summarized_diff = summarize_with_gemini(total_diff, "diff")
+                    st.session_state.use_summarized = True
+                    st.success("✅ Diff summarized")
+                    st.rerun()
+        with sum_col2:
+            if st.session_state.use_summarized:
+                st.info("📝 Using summarized diff for AI review")
+                if st.button("🔄 Reset to full diff"):
+                    st.session_state.use_summarized = False
+                    st.session_state.summarized_diff = None
+                    st.rerun()
+else:
+    st.markdown('<span class="status-indicator">⚪ No changes detected</span>', unsafe_allow_html=True)
 
-# --- TAB 1: REVIEW ---
+# Commit History Panel
+if changed_files:
+    from scripts.git_operations import get_commits_between
+    
+    with st.expander("📝 Commit History", expanded=False):
+        try:
+            commits = get_commits_between(repo_path, actual_target, actual_source)
+            
+            if commits['total_count'] > 0:
+                st.caption(f"Showing {len(commits['tier1'])} detailed + {len(commits['tier2'])} summary of {commits['total_count']} total commits")
+                
+                # Tier 1: Full detail
+                if commits['tier1']:
+                    st.markdown("**Recent Commits**")
+                    for c in commits['tier1']:
+                        with st.container():
+                            st.markdown(f"**`{c['hash']}`** — {c['subject']}")
+                            st.caption(f"{c['author']} • {c['date']}")
+                            if c.get('body'):
+                                body_preview = c['body'][:300] + '...' if len(c['body']) > 300 else c['body']
+                                st.text(body_preview)
+                
+                # Tier 2: Compact
+                if commits['tier2']:
+                    st.markdown("---")
+                    st.markdown("**Earlier Commits**")
+                    for c in commits['tier2']:
+                        st.text(f"{c['hash']} | {c['date']} | {c['subject'][:50]}...")
+                
+                # Truncation note
+                if commits['truncated_count'] > 0:
+                    st.info(f"ℹ️ {commits['truncated_count']} older commits not shown")
+            else:
+                st.info("No commits between these refs")
+        except Exception as e:
+            st.warning(f"Could not load commit history: {e}")
+
+st.divider()
+
+# --- MAIN LAYOUT ---
+# Master Navigation Tabs (Simplified)
+tab_review, tab_history, tab_editor, tab_settings = st.tabs(["🔍 Review & Analyze", "📜 History", "📝 Editor", "⚙️ Settings"])
+
+# --- TAB 1: REVIEW & ANALYZE ---
 with tab_review:
+    # Hero Action Button (Top Right)
+    action_col1, action_col2 = st.columns([3, 1])
+    with action_col1:
+        st.markdown("### 📝 Code Changes")
+    with action_col2:
+        st.markdown('<div class="hero-btn">', unsafe_allow_html=True)
+        if st.button("🚀 RUN AI REVIEW", use_container_width=True, disabled=st.session_state.is_executing or not changed_files):
+            if not st.session_state.active_bundle:
+                # Use default bundle if none selected
+                default_recipe = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 
+                                            "prompts", "recipes", "standard_pr_review.md")
+                if os.path.exists(default_recipe):
+                    st.session_state.active_bundle = [default_recipe]
+            
+            if st.session_state.active_bundle:
+                st.session_state.is_executing = True
+                st.session_state.completed_steps = []
+                st.session_state.execution_times = {}
+                st.rerun()
+        st.markdown('</div>', unsafe_allow_html=True)
+    
+    # Collapsible Prompt Customization
+    with st.expander("🧱 Customize Instructions (Prompt Composer)", expanded=True):
+        # Layout: Tree Selector | Preview Panel
+        comp_col1, comp_col2 = st.columns([1.2, 1.8], gap="medium")
+        
+        library = ui_utils.list_prompt_library()
+        
+        # Build Tree Items & Label Map (Pre-calculation)
+        tree_data = {}
+        label_map = {}
+        lib_lookup = {item['full_path']: item for item in library}
+        
+        for item in library:
+            folder = os.path.dirname(item['name']) or "root"
+            if "macros" in folder: continue
+            if folder not in tree_data: tree_data[folder] = []
+            tree_data[folder].append(item)
+            
+        folder_order = ['recipes', 'library', 'root']
+        sorted_folders = sorted(tree_data.keys(), key=lambda x: folder_order.index(x) if x in folder_order else 99)
+        
+        sac_items = []
+        for folder in sorted_folders:
+            children = []
+            for item in tree_data[folder]:
+                desc = item.get('description')
+                
+                # Unique label logic
+                base_label = os.path.basename(item['name'])
+                label = base_label
+                counter = 1
+                while label in label_map:
+                    label = f"{base_label} ({counter})"
+                    counter += 1
+                
+                label_map[label] = item['full_path']
+                
+                desc_str = desc if desc else ""
+                children.append(sac.TreeItem(
+                    label=label,
+                    icon='file-text',
+                    description=desc_str[:57]+"..." if len(desc_str)>60 else desc_str,
+                    tooltip=desc_str
+                ))
+            
+            icon = 'folder-open' if 'recipes' in folder else 'folder'
+            sac_items.append(sac.TreeItem(
+                label=folder.title(),
+                icon=icon,
+                children=children
+            ))
+
+        # --- LEFT COLUMN: SELECTOR ---
+        with comp_col1:
+            st.markdown("##### 📚 Selection")
+            
+            # Initial Selection Mapping
+            path_to_label = {v: k for k, v in label_map.items()}
+            current_selection_labels = [path_to_label[p] for p in st.session_state.active_bundle if p in path_to_label]
+            
+            # Fallback to Multiselect for stability
+            sorted_options = sorted(list(label_map.keys()))
+            default_sel = [l for l in current_selection_labels if l in sorted_options]
+            selected_labels = st.multiselect("Select Recipes", sorted_options, default=default_sel, key="prompt_multiselect")
+            
+            # Update State
+            valid_selection = [label_map[lbl] for lbl in selected_labels if lbl in label_map]
+            
+            if valid_selection != st.session_state.active_bundle:
+                st.session_state.active_bundle = valid_selection
+                st.rerun()
+
+        # --- RIGHT COLUMN: PREVIEW ---
+        with comp_col2:
+            st.markdown("##### 🔮 Execution Plan")
+            
+            if not st.session_state.active_bundle:
+                 st.info("👈 Select detailed recipes from the library to build your analysis strategy.")
+                 default_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "prompts", "recipes", "standard_pr_review.md")
+                 if os.path.exists(default_path) and default_path not in st.session_state.active_bundle:
+                     st.caption("ℹ️ If empty, 'Standard PR Review' applies by default.")
+            else:
+                 st.caption(f"The following **{len(st.session_state.active_bundle)} recipes** will be executed in order:")
+                 
+                 for i, path in enumerate(st.session_state.active_bundle):
+                     item = lib_lookup.get(path)
+                     fname = os.path.basename(path)
+                     if item:
+                         desc = item.get('description', 'No description available.')
+                         tags = item.get('tags', [])
+                     else:
+                         desc = "Unknown recipe"
+                         tags = []
+                     
+                     tags_html = "".join([f'<span class="lego-tag">{t}</span>' for t in tags])
+                     
+                     st.markdown(f"""
+                     <div style="background: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 12px; margin-bottom: 8px; display: flex; flex-direction: column;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+                            <span style="font-weight: 600; color: #58a6ff;">{i+1}. {fname}</span>
+                            <span style="font-size: 0.8em; color: #8b949e; font-family: monospace;">{len(tags)} tags</span>
+                        </div>
+                        <div style="font-size: 0.9em; color: #c9d1d9; margin-bottom: 8px;">{desc}</div>
+                        <div>{tags_html}</div>
+                     </div>
+                     """, unsafe_allow_html=True)
+
+    # Tool Selection
+    with st.expander("⚙️ AI Tool Configuration", expanded=False):
+        new_tool = st.selectbox("AI Provider", ["GitHub Copilot CLI", "Gemini API", "Gemini CLI"], 
+                               index=0 if st.session_state.tool_choice == "GitHub Copilot CLI" else (1 if st.session_state.tool_choice == "Gemini API" else 2))
+        if new_tool != st.session_state.tool_choice:
+            st.session_state.tool_choice = new_tool
+            st.rerun()
+        
+        if st.session_state.tool_choice == "Gemini API":
+            try:
+                from scripts.llm_strategy import get_provider
+                provider = get_provider("gemini")
+                available_models = provider.list_models()
+            except Exception:
+                available_models = ["gemini-2.0-flash-exp", "gemini-1.5-pro", "gemini-1.5-flash"]
+            
+            if 'available_models' not in st.session_state or st.session_state.get('last_tool_choice') != st.session_state.tool_choice:
+                st.session_state.available_models = available_models
+                st.session_state.last_tool_choice = st.session_state.tool_choice
+            
+            current_index = 0
+            if st.session_state.model_choice in st.session_state.available_models:
+                current_index = st.session_state.available_models.index(st.session_state.model_choice)
+            new_model = st.selectbox("Model", st.session_state.available_models, index=current_index)
+            if new_model != st.session_state.model_choice:
+                st.session_state.model_choice = new_model
+        elif st.session_state.tool_choice == "Gemini CLI":
+            try:
+                from scripts.llm_strategy import get_provider
+                provider = get_provider("gemini-cli")
+                available_models = provider.list_models()
+            except Exception:
+                available_models = ["gemini-2.5-pro", "gemini-2.0-flash", "gemini-2.5-flash", "gemini-3-flash-preview"]
+            
+            if 'available_models' not in st.session_state or st.session_state.get('last_tool_choice') != st.session_state.tool_choice:
+                st.session_state.available_models = available_models
+                st.session_state.last_tool_choice = st.session_state.tool_choice
+            
+            current_index = 0
+            if st.session_state.model_choice in st.session_state.available_models:
+                current_index = st.session_state.available_models.index(st.session_state.model_choice)
+            new_model = st.selectbox("Model", st.session_state.available_models, index=current_index)
+            if new_model != st.session_state.model_choice:
+                st.session_state.model_choice = new_model
+        else:
+            st.session_state.model_choice = "gpt-4"  # Default for Copilot CLI
+            st.caption("Using GitHub Copilot CLI (no model selection needed)")
+    
+    st.divider()
+    
+    # Execution Status (if running)
+    if st.session_state.is_executing:
+        st.markdown("### 🚀 AI Review In Progress")
+
+        with st.status("Running AI Review...", expanded=True) as status:
+            try:
+                # Track execution time
+                start_time = time.time()
+                
+                # Step 1: Fetch diff
+                st.write("📥 **Step 1/5:** Fetching diff from repository...")
+                
+                # Check for summarized override
+                if st.session_state.use_summarized and st.session_state.summarized_diff:
+                    diff_content = st.session_state.summarized_diff
+                    st.info("ℹ️ Using pre-summarized diff for context optimization")
+                else:
+                    diff_content = ui_utils.get_diff(repo_path, actual_target, actual_source, 
+                                                    target_commit=st.session_state.target_commit, 
+                                                    source_commit=st.session_state.source_commit)
+                
+                elapsed = time.time() - start_time
+                st.write(f"   ✓ Fetched {len(diff_content)} chars of changes ({elapsed:.2f}s)")
+                st.session_state.execution_times['fetch_diff'] = elapsed
+                start_time = time.time()
+                
+                # Fetch Commit History for Context
+                commit_history = {}
+                try:
+                    from scripts.git_operations import get_commits_between
+                    commit_history = get_commits_between(
+                        repo_path, 
+                        actual_target, 
+                        actual_source,
+                        tier1_limit=10,
+                        tier2_limit=50
+                    )
+                    st.write(f"   ✓ Loaded {commit_history.get('total_count', 0)} commits for context")
+                except Exception as e:
+                    st.warning(f"   ⚠️ Failed to load commit history: {e}")
+
+                # Step 2: Prepare prompt
+                st.write("🧱 **Step 2/5:** Building review prompt...")
+                
+                # Create output directory early for template rendering
+                timestamp = datetime.now().strftime("%Y%m%dT%H%M%S")
+                out_folder = f"output/{timestamp}-{st.session_state.repo}-review"
+                
+                # We construct the prompt manually here to support multiple recipes
+                # But we must ensure the macros work
+                
+                full_prompt = ""
+                # Inject diff at the top for some recipes, or let macros handle it?
+                # The Orchestrator uses render_prompt_with_context. 
+                # Here we loop through active_bundle (recipes).
+                
+                for p_path in st.session_state.active_bundle:
+                    # Pass context data to render_template
+                    part = render_template(
+                        p_path, 
+                        diff_content, 
+                        repo_name=st.session_state.repo, 
+                        inject_diff_content=False, # Recipes usually include {{ DIFF_CONTENT }} explicitly
+                        commit_history_data=commit_history,
+                        target_ref=actual_target,
+                        source_ref=actual_source,
+                        OUTPUT_DIR=out_folder
+                    )
+                    full_prompt += part + "\n\n---\n\n"
+                
+                # Fallback if no recipe includes DIFF_CONTENT
+                if "{{ DIFF_CONTENT }}" not in full_prompt and "diff" not in full_prompt.lower()[:200]:
+                     full_prompt += f"\n\n## DIFF\n\n```diff\n{diff_content}\n```"
+                
+                st.write(f"   ✓ Prompt ready ({len(st.session_state.active_bundle)} instruction(s) included)")
+                
+                # Step 3: Save artifacts
+                st.write("💾 **Step 3/5:** Saving artifacts...")
+                os.makedirs(out_folder, exist_ok=True)
+                
+                with open(f"{out_folder}/prompt.txt", "w") as f:
+                    f.write(full_prompt)
+                with open(f"{out_folder}/diff.patch", "w") as f:
+                    f.write(diff_content)
+                
+                st.write(f"   ✓ Saved to `{out_folder}`")
+                
+                # Step 4: Call AI
+                st.write(f"🤖 **Step 4/5:** Calling {st.session_state.tool_choice} with {st.session_state.model_choice}...")
+                st.info("⏳ This may take 30-60 seconds. Please wait...")
+                
+                # Use Strategy Pattern for LLM provider
+                from scripts.llm_strategy import get_provider
+                
+                provider_map = {
+                    "Gemini API": "gemini",
+                    "Gemini CLI": "gemini-cli",
+                    "GitHub Copilot CLI": "gh-copilot"
+                }
+                provider_name = provider_map.get(st.session_state.tool_choice, "gemini")
+                provider = get_provider(provider_name)
+                
+                # Call the provider
+                if provider_name == "gh-copilot":
+                    response = provider.call(full_prompt, allow_tools=['shell(git)', 'write'], timeout=300)
+                elif provider_name == "gemini-cli":
+                    response = provider.call(full_prompt, model=st.session_state.model_choice, allow_tools=['shell(git)', 'write'], timeout=300)
+                else:
+                    response = provider.call(full_prompt, model=st.session_state.model_choice)
+                
+                if response:
+                    st.write(f"   ✓ Received {len(response)} characters of analysis")
+                else:
+                    st.warning("   ⚠️ Received empty response from AI")
+                
+                # Step 5: Save response
+                st.write("💾 **Step 5/5:** Saving results...")
+                with open(f"{out_folder}/response.md", "w") as f:
+                    f.write(response)
+                
+                db_manager.save_cache(
+                    diff_hash=hashlib.md5(diff_content.encode()).hexdigest(),
+                    prompt_hash=hashlib.md5(full_prompt.encode()).hexdigest(),
+                    model=st.session_state.model_choice,
+                    response=response,
+                    repo_name=st.session_state.repo,
+                    summary=response[:100] + "..." if response else "Empty response",
+                    tags="ui_review"
+                )
+                
+                st.write("   ✓ Results saved to database and file")
+                
+                status.update(label="✅ Analysis Complete!", state="complete", expanded=False)
+                
+                # Store result and trigger results display
+                st.session_state.execution_result = response
+                st.session_state.is_executing = False
+                st.session_state.show_results = True
+                st.session_state.current_step = None
+                
+                st.success(f"🎉 Review complete! Check the results below or in the History tab.")
+                st.rerun()
+                
+            except Exception as e:
+                status.update(label="❌ Analysis Failed", state="error")
+                st.error(f"**Error during execution:**\n\n{str(e)}")
+                import traceback
+                with st.expander("📋 Full Traceback"):
+                    st.code(traceback.format_exc())
+                st.session_state.is_executing = False
+                st.session_state.current_step = None
+    
     r_col1, r_col2 = st.columns([1, 3])
     
     with r_col1:
-        st.markdown("### 📂 Files")
-        if changed_files:
-            # Simple Tree View Implementation
-            file_tree = {}
-            for f in changed_files:
-                parts = f.split('/')
-                current = file_tree
-                for part in parts[:-1]:
-                    current = current.setdefault(part, {})
-                current[parts[-1]] = f
-
-            def render_tree(node, prefix=""):
-                for name, item in sorted(node.items()):
-                    if isinstance(item, dict):
-                        with st.expander(f"📂 {name}", expanded=True):
-                            render_tree(item, prefix + name + "/")
-                    else:
-                        is_sel = item == st.session_state.selected_file
-                        btn_label = f"{'👉 ' if is_sel else '📄 '}{name}"
-                        if st.button(btn_label, key=f"tree_{item}", use_container_width=True):
-                            st.session_state.selected_file = item
-                            st.rerun()
-            
-            render_tree(file_tree)
-        else:
-            st.success("No changes detected.")
+        file_tree.render_file_tree(repo_path, actual_target, actual_source, changed_files)
 
     with r_col2:
-        if st.session_state.selected_file:
-            st.markdown(f"### 📝 Diff: `{st.session_state.selected_file}`")
-            st.caption(f"Comparing: `{actual_target}` ↔ `{actual_source}`")
-            before = ui_utils.get_file_content(repo_path, actual_target, st.session_state.selected_file)
-            after = ui_utils.get_file_content(repo_path, actual_source, st.session_state.selected_file)
-            st_code_diff(before, after)
-            
-            # Context Tower (Findings) moved here for relevance
-            findings = ui_utils.get_findings(repo_path, actual_target, actual_source, st.session_state.target_commit, st.session_state.source_commit)
-            if findings:
-                with st.expander(f"🚨 Rule Findings ({len(findings)})", expanded=False):
-                    for f in findings:
-                        sev = "high" if "security" in f['message'].lower() or "deprecated" in f['message'].lower() else "med"
-                        st.markdown(f'<div class="finding-alert finding-{sev}"><b>{f["type"].upper()}</b>: {f["message"]}</div>', unsafe_allow_html=True)
-        else:
-            st.info("Select a file from the tree to view the diff.")
-
-# --- TAB 2: COMPOSE ---
-with tab_compose:
-    c_col1, c_col2 = st.columns([1, 2])
+        diff_viewer.render_diff_viewer(repo_path, actual_target, actual_source)
     
-    with c_col1:
-        st.markdown("### 📚 Library")
-        library = ui_utils.list_prompt_library()
-        recipes = [p for p in library if "recipes" in p['full_path']]
-        snippets = [p for p in library if "snippets" in p['full_path']]
-        
-        with st.expander("Recipes", expanded=True):
-            for r in recipes:
-                if st.button(f"➕ {r['name']}", key=f"rec_{r['name']}", use_container_width=True):
-                    if r['full_path'] not in st.session_state.active_bundle:
-                        st.session_state.active_bundle.append(r['full_path'])
-                        st.rerun()
-        
-        with st.expander("Snippets", expanded=False):
-            for s in snippets:
-                if st.button(f"➕ {s['name']}", key=f"snip_{s['name']}", use_container_width=True):
-                    if s['full_path'] not in st.session_state.active_bundle:
-                        st.session_state.active_bundle.append(s['full_path'])
-                        st.rerun()
+    # Display Results (after execution completes)
+    diff_viewer.render_execution_results()
 
-    with c_col2:
-        st.markdown("### 🧱 Active Bundle")
-        if not st.session_state.active_bundle:
-            st.info("No blocks added. Bundle is empty.")
-        else:
-            for i, block_path in enumerate(st.session_state.active_bundle):
-                name = os.path.basename(block_path)
-                st.markdown(f'<div class="lego-block"><span><span class="lego-tag">MOD</span> {name}</span></div>', unsafe_allow_html=True)
-            if st.button("🗑️ Clear Bundle", use_container_width=True):
-                st.session_state.active_bundle = []
-                st.rerun()
-        
-        st.markdown("---")
-        st.markdown("### 🧪 Preview")
-        if not st.session_state.active_bundle:
-            st.warning("Assemble a bundle to see preview.")
-        else:
-            composed = ""
-            for p in st.session_state.active_bundle:
-                try:
-                    composed += render_template(p, "diff_sample", repo_name=st.session_state.repo) + "\n\n---\n\n"
-                except Exception as e:
-                    composed += f"Error: {e}\n"
-            st.text_area("Final Prompt Payload", value=composed, height=400, disabled=True)
+# --- TAB 2: HISTORY ---
 
-# --- TAB 3: ANALYZE ---
-with tab_analyze:
-    st.markdown("### 🚀 Execution")
-    
-    # Config Row
-    c_tool, c_model = st.columns([1, 1])
-    with c_tool:
-        tool_choice = st.selectbox("Tool", ["Gemini API", "Gemini CLI"])
-    with c_model:
-        # Default models to avoid blocking startup
-        default_models = ["gemini-2.0-flash-exp", "gemini-1.5-pro", "gemini-1.5-flash"]
-        
-        if 'available_models' not in st.session_state:
-            st.session_state.available_models = default_models
-            
-        def fetch_models():
-            try:
-                from scripts import call_gemini
-                return call_gemini.list_models()
-            except Exception as e:
-                st.warning(f"Could not fetch models: {e}")
-                return default_models
-
-        # UI
-        col_m_sel, col_m_btn = st.columns([3, 1])
-        with col_m_sel:
-            model_choice = st.selectbox("Model", st.session_state.available_models, index=0)
-        with col_m_btn:
-            if st.button("🔄", help="Refresh Model List"):
-                st.session_state.available_models = fetch_models()
-                st.rerun()
-
-    # Launch Button Area
-    st.markdown('<div class="hero-btn">', unsafe_allow_html=True)
-    is_bundle = len(st.session_state.active_bundle) > 0
-    btn_label = "🤖 AUTOMATED REVIEW" if is_bundle else "🚀 LAUNCH ANALYSIS"
-    
-    if st.button(btn_label, use_container_width=True, disabled=st.session_state.is_executing):
-        if not is_bundle:
-            st.warning("Assemble a bundle first! Go to the 'Compose Prompt' tab.")
-        else:
-            st.session_state.is_executing = True
-            st.session_state.completed_steps = []
-            st.session_state.execution_times = {}
-            st.rerun()
-    st.markdown('</div>', unsafe_allow_html=True)
-    
-    if st.session_state.is_executing:
-        st.markdown("---")
-        st.markdown("### 📊 Live Status")
-        
-        # Mermaid DAG
-        dag_code = ui_utils.generate_mermaid_dag(
-            st.session_state.active_bundle, 
-            st.session_state.current_step, 
-            st.session_state.completed_steps
-        )
-        st.markdown(f"```mermaid\n{dag_code}\n```")
-        
-        # Execution Logic
-        with st.status("Running Analysis...", expanded=True) as status:
-            try:
-                # 1. Fetch Diff
-                st.write("📥 Fetching Diff...")
-                diff_content = ui_utils.get_diff(
-                    repo_path, 
-                    actual_target, 
-                    actual_source, 
-                    target_commit=st.session_state.target_commit, 
-                    source_commit=st.session_state.source_commit
-                )
-                
-                # 2. Render Prompt
-                st.write("🧱 Rendering Prompt...")
-                
-                # Intelligent Stacking: Shared Context
-                full_prompt = f"# SHARED CONTEXT\n\n## GIT DIFF\n\n```diff\n{diff_content}\n```\n\n"
-                
-                for p in st.session_state.active_bundle:
-                    st.write(f" - Processing {os.path.basename(p)}...")
-                    # Pass inject_diff_content=False to avoid duplication
-                    part = render_template(p, diff_content, repo_name=st.session_state.repo, inject_diff_content=False)
-                    full_prompt += f"\n---\n\n{part}"
-                
-                # Prepare Output
-                timestamp = datetime.now().strftime("%Y%m%dT%H%M%S")
-                out_folder = f"output/{timestamp}-{st.session_state.repo}-ui_run"
-                os.makedirs(out_folder, exist_ok=True)
-                
-                prompt_path = f"{out_folder}/prompt.txt"
-                response_path = f"{out_folder}/response.md"
-                diff_path = f"{out_folder}/diff.patch"
-
-                with open(prompt_path, "w") as f:
-                    f.write(full_prompt)
-                with open(diff_path, "w") as f:
-                    f.write(diff_content)
-
-                # 3. Call Gemini
-                st.write(f"🤖 Calling {tool_choice} ({model_choice})...")
-                response = ""
-                
-                if tool_choice == "Gemini API":
-                    from scripts import call_gemini
-                    response = call_gemini.call_with_retry(full_prompt, model=model_choice)
-                    with open(response_path, "w") as f:
-                        f.write(response)
-                else:
-                    # CLI Call (via launch_agent.sh)
-                    script_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "scripts", "launch_agent.sh")
-                    
-                    # launch_agent.sh arguments: AGENT PROMPT_FILE APPLY
-                    # We use "gemini" as agent, prompt_path, and "false" for apply
-                    result = subprocess.run(
-                        ["bash", script_path, "gemini", prompt_path, "false"],
-                        capture_output=True,
-                        text=True
-                    )
-                    
-                    if result.returncode != 0:
-                        raise RuntimeError(f"CLI Error: {result.stderr}\nOutput: {result.stdout}")
-                    
-                    # The agent script writes to prompt_path + ".session.log"
-                    log_path = f"{prompt_path}.session.log"
-                    if os.path.exists(log_path):
-                        with open(log_path, "r") as f:
-                            response = f.read()
-                        # Also save to standard response.md for consistency
-                        with open(response_path, "w") as f:
-                            f.write(response)
-                    else:
-                        raise RuntimeError(f"CLI did not generate session log at {log_path}")
-                
-                # 4. Save Results
-                st.write("💾 Saving Results...")
-                diff_hash = hashlib.md5(diff_content.encode()).hexdigest()
-                prompt_hash = hashlib.md5(full_prompt.encode()).hexdigest()
-                
-                # DB
-                db_manager.save_cache(
-                    diff_hash=diff_hash,
-                    prompt_hash=prompt_hash,
-                    model=model_choice,
-                    response=response,
-                    repo_name=st.session_state.repo,
-                    summary=response[:100] + "...",
-                    tags="ui_run"
-                )
-                
-                status.update(label="Analysis Complete!", state="complete", expanded=False)
-                st.session_state.completed_steps = st.session_state.active_bundle
-                st.session_state.is_executing = False
-                st.success(f"Analysis saved to `{out_folder}`")
-                
-            except Exception as e:
-                status.update(label="Analysis Failed", state="error")
-                st.error(f"Execution failed: {e}")
-                st.session_state.is_executing = False
-
-# --- TAB 4: HISTORY ---
 with tab_history:
     st.markdown("### 📜 Execution History")
     
@@ -457,7 +822,7 @@ with tab_history:
         else:
             st.warning(f"Database not found at {db_path}")
 
-# --- TAB 5: EDITOR ---
+# --- TAB 3: EDITOR ---
 with tab_editor:
     st.markdown("### 📝 Prompt Editor")
     
@@ -497,7 +862,7 @@ with tab_editor:
                     f.write(new_content)
                 st.success(f"Saved {selected_edit_file}")
 
-# --- TAB 6: SETTINGS ---
+# --- TAB 4: SETTINGS ---
 with tab_settings:
     st.markdown("### ⚙️ Repository Settings")
     
@@ -595,24 +960,7 @@ with tab_settings:
                         time.sleep(1)
                         st.rerun()
 
-# --- FOOTER / CONFIG ---
-st.markdown("---")
-with st.expander("⚙️ Global Configuration", expanded=False):
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.selectbox("Code Lang", ["Auto", "Python", "Go", "TS"])
-    with col2:
-        st.selectbox("Answer Lang", ["English", "Portuguese", "Spanish"])
-    with col3:
-        st.checkbox("With Docs", value=True)
 
-# Token Meter
-total_diff = ui_utils.get_diff(repo_path, actual_target, actual_source, target_commit=st.session_state.target_commit, source_commit=st.session_state.source_commit)
-usage = (len(total_diff) + 5000) / 128000
-st.markdown(f"""
-<div class="token-meter-bg"><div class="token-meter-fill" style="width: {min(usage*100,100):.1f}%;"></div></div>
-<div style="font-size: 0.8em; text-align: right; color: #8b949e;">{min(usage*128, 128):.1f}k / 128k used</div>
-""", unsafe_allow_html=True)
 
 # --- STATUS ---
 st.markdown(f"""

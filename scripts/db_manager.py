@@ -19,10 +19,36 @@ def get_db_connection():
     return conn
 
 def init_db():
-    """Initialize the SQLite database and schema."""
+    """Initialize the SQLite database and schema with versioning."""
     conn = get_db_connection()
     c = conn.cursor()
     
+    # Create schema version table
+    c.execute('''CREATE TABLE IF NOT EXISTS schema_version
+                 (version INTEGER PRIMARY KEY,
+                  applied_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                  description TEXT)''')
+    
+    # Get current schema version
+    c.execute('SELECT MAX(version) FROM schema_version')
+    current_version = c.fetchone()[0] or 0
+    
+    # Apply migrations incrementally
+    if current_version < 1:
+        _apply_migration_v1(c)
+        c.execute('INSERT INTO schema_version (version, description) VALUES (?, ?)', 
+                 (1, 'Initial schema with analysis_history table'))
+    
+    if current_version < 2:
+        _apply_migration_v2(c)
+        c.execute('INSERT INTO schema_version (version, description) VALUES (?, ?)', 
+                 (2, 'Add config_snapshot and enhanced columns'))
+    
+    conn.commit()
+    conn.close()
+
+def _apply_migration_v1(c):
+    """Apply version 1: Initial schema."""
     # Create table if not exists
     c.execute('''CREATE TABLE IF NOT EXISTS analysis_history
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -37,25 +63,6 @@ def init_db():
                   tags TEXT,
                   entry_type TEXT DEFAULT 'review')''')
     
-    # Migration: Check for new columns
-    c.execute("PRAGMA table_info(analysis_history)")
-    existing_columns = {info[1] for info in c.fetchall()}
-    
-    required_columns = {
-        'summary': 'TEXT',
-        'tags': 'TEXT',
-        'repo_name': 'TEXT',
-        'entry_type': "TEXT DEFAULT 'review'"
-    }
-
-    for col, col_def in required_columns.items():
-        if col not in existing_columns:
-            print(f"[DB] Migrating: Adding {col} column...")
-            try:
-                c.execute(f"ALTER TABLE analysis_history ADD COLUMN {col} {col_def}")
-            except sqlite3.OperationalError as e:
-                print(f"[DB] Migration warning for {col}: {e}")
-
     # Create FTS5 Virtual Table for semantic search
     try:
         c.execute('''CREATE VIRTUAL TABLE IF NOT EXISTS analysis_history_fts 
@@ -81,9 +88,24 @@ def init_db():
     # Index for fast lookups
     c.execute('CREATE INDEX IF NOT EXISTS idx_cache ON analysis_history (diff_hash, prompt_hash, model)')
     c.execute('CREATE INDEX IF NOT EXISTS idx_repo ON analysis_history (repo_name, timestamp)')
+
+def _apply_migration_v2(c):
+    """Apply version 2: Enhanced columns for auditability."""
+    # Migration: Check for new columns
+    c.execute("PRAGMA table_info(analysis_history)")
+    existing_columns = {info[1] for info in c.fetchall()}
     
-    conn.commit()
-    conn.close()
+    required_columns = {
+        'config_snapshot': 'TEXT'  # JSON snapshot of WorkflowConfig for auditability
+    }
+    
+    for col, col_def in required_columns.items():
+        if col not in existing_columns:
+            print(f"[DB] Migrating: Adding {col} column...")
+            try:
+                c.execute(f"ALTER TABLE analysis_history ADD COLUMN {col} {col_def}")
+            except sqlite3.OperationalError as e:
+                print(f"[DB] Migration warning for {col}: {e}")
 
 def get_cache(diff_hash: str, prompt_hash: str, model: str) -> Optional[str]:
     """Retrieve cached response if exists."""
@@ -150,16 +172,69 @@ def get_context(repo_name: str, limit: int = 3, search_query: Optional[str] = No
         })
     return context
 
+
+def get_analysis_with_config(entry_id: int) -> Optional[Dict[str, Any]]:
+    """Retrieve a specific analysis with its config snapshot for replay.
+    
+    Args:
+        entry_id: Database ID of the analysis entry
+        
+    Returns:
+        Dictionary with 'response', 'config_snapshot' (JSON string), and metadata,
+        or None if not found.
+    """
+    if not os.path.exists(DB_PATH):
+        return None
+        
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute('''SELECT id, timestamp, diff_hash, prompt_hash, model, response, 
+                        repo_name, summary, tags, entry_type, config_snapshot 
+                 FROM analysis_history WHERE id=?''', (entry_id,))
+    row = c.fetchone()
+    conn.close()
+    
+    if not row:
+        return None
+        
+    return {
+        'id': row['id'],
+        'timestamp': row['timestamp'],
+        'diff_hash': row['diff_hash'],
+        'prompt_hash': row['prompt_hash'],
+        'model': row['model'],
+        'response': row['response'],
+        'repo_name': row['repo_name'],
+        'summary': row['summary'],
+        'tags': row['tags'],
+        'entry_type': row['entry_type'],
+        'config_snapshot': row['config_snapshot']  # JSON string of WorkflowConfig
+    }
+
 def save_cache(diff_hash: str, prompt_hash: str, model: str, response: str, 
                cost: float = 0.0, repo_name: str = None, summary: str = None, 
-               tags: str = None, entry_type: str = 'review'):
-    """Save a new analysis result."""
+               tags: str = None, entry_type: str = 'review', config_snapshot: str = None):
+    """Save a new analysis result with optional config snapshot for auditability.
+    
+    Args:
+        diff_hash: SHA256 hash of the diff content
+        prompt_hash: SHA256 hash of the base prompt
+        model: LLM model name
+        response: LLM response text
+        cost: API cost (if tracked)
+        repo_name: Repository name
+        summary: Brief summary for context
+        tags: Comma-separated tags
+        entry_type: 'review' or 'agent_session'
+        config_snapshot: JSON string of WorkflowConfig for reproducibility
+    """
     init_db() # Ensure DB exists
     conn = get_db_connection()
     c = conn.cursor()
-    c.execute('''INSERT INTO analysis_history (diff_hash, prompt_hash, model, response, cost, repo_name, summary, tags, entry_type) 
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)''',
-              (diff_hash, prompt_hash, model, response, cost, repo_name, summary, tags, entry_type))
+    c.execute('''INSERT INTO analysis_history 
+                 (diff_hash, prompt_hash, model, response, cost, repo_name, summary, tags, entry_type, config_snapshot) 
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+              (diff_hash, prompt_hash, model, response, cost, repo_name, summary, tags, entry_type, config_snapshot))
     conn.commit()
     conn.close()
     print(f"[DB] Saved {entry_type} entry for {diff_hash[:8]} (Repo: {repo_name}, Tags: {tags})")

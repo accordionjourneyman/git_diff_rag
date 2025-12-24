@@ -29,3 +29,6 @@ data/
 # Repository Setup (Local specs)
 repository-setup/*.md
 !repository-setup/TEMPLATE.md
+
+# Internal documentation for agentic development
+.agents/

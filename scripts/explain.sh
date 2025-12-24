@@ -1,12 +1,25 @@
 #!/usr/bin/env bash
-# Wrapper for New-Bundle.sh to run the explain_diff workflow
+# ============================================================================
+# Git Diff RAG - Explain Wrapper (DEPRECATED)
+# ============================================================================
+# 
+# ⚠️  DEPRECATION NOTICE:
+# This bash script is deprecated. Please use:
+#   python cli.py explain --repo <repo_name>
+# ============================================================================
 
-if [[ $# -lt 1 ]]; then
-    echo "Usage: ./scripts/explain.sh <repo_name> [options]"
-    exit 1
+set -euo pipefail
+
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+
+# Find Python
+PYTHON_CMD="python3"
+if [[ -f "$PROJECT_ROOT/.venv/bin/python3" ]]; then
+    PYTHON_CMD="$PROJECT_ROOT/.venv/bin/python3"
+elif [[ -f "$PROJECT_ROOT/venv/bin/python3" ]]; then
+    PYTHON_CMD="$PROJECT_ROOT/venv/bin/python3"
 fi
 
-REPO="$1"
-shift
-
-./scripts/New-Bundle.sh --repo "$REPO" --workflow explain_diff "$@"
+# Delegate to Python CLI
+exec "$PYTHON_CMD" "$PROJECT_ROOT/cli.py" explain "$@"

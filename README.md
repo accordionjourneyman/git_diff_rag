@@ -32,13 +32,7 @@ streamlit run cockpit/app.py
 
 [👉 Read the full Cockpit Documentation](docs/COCKPIT.md)
 
-## � Documentation
-
-- [**Architecture**](docs/ARCHITECTURE.md): High-level design and data flow.
-- [**Cockpit Guide**](docs/COCKPIT.md): How to use the GUI.
-- [**Tools Reference**](docs/TOOLS.md): CLI scripts and Python modules.
-
-## �🚀 Quick Start
+## 🚀 Quick Start
 
 ### 1. Setup
 ```bash
@@ -52,44 +46,61 @@ cp .env.example .env
 ### 2. Run a Review
 ```bash
 # Review the last commit on the current repo
-./scripts/New-Bundle.sh --repo my-repo --commit HEAD
+python cli.py analyze --repo my-repo --commit HEAD
 ```
 
 ## 💡 Use Cases (Examples)
 
-1.  **Self-Review**: `New-Bundle.sh --commit HEAD` before pushing.
-2.  **Post-Mortem**: `New-Bundle.sh --workflow blame --commit <bad-sha>` to find root causes.
-3.  **Non-Technical Update**: `New-Bundle.sh --workflow explain` to generate release notes for PMs.
-4.  **Security Audit**: `New-Bundle.sh --workflow security` (custom recipe) to scan for vulnerabilities.
+1.  **Self-Review**: `python cli.py analyze --repo my-repo --commit HEAD` before pushing.
+2.  **Post-Mortem**: `python cli.py analyze --repo my-repo --workflow blame --commit <bad-sha>` to find root causes.
+3.  **Non-Technical Update**: `python cli.py explain --repo my-repo` to generate release notes for PMs.
+4.  **Security Audit**: `python cli.py analyze --repo my-repo --workflow security` (custom recipe) to scan for vulnerabilities.
 5.  **Migration Helper**: Generate a checklist for migrating API versions based on diffs.
 ...and many more by creating custom recipes in `prompts/recipes/`.
 
 ## 🛠️ CLI Reference
 
-### Main Orchestrator (`New-Bundle.sh`)
+### Main Command (`python cli.py`)
 
 ```bash
 USAGE:
-    ./scripts/New-Bundle.sh --repo <repo_name> [OPTIONS]
+    python cli.py <command> [OPTIONS]
+
+COMMANDS:
+    analyze        Execute analysis workflow on git diff
+    explain        Explain changes in plain language (convenience wrapper)
+    list-models    List available AI models for each provider
+    check-setup    Verify installation and configuration
+    list-repos     List configured repositories
+
+GLOBAL OPTIONS:
+    --help, -h     Show help message
+```
+
+### Analyze Command
+
+```bash
+python cli.py analyze --repo <repo_name> [OPTIONS]
 
 REQUIRED:
     --repo <name>       Repository name (must match repository-setup/<name>.md)
 
 OPTIONS:
-    --workflow <name>   Workflow to execute (default: pr_review)
+    --workflow <name>   Workflow to execute (default from config)
+    --target <ref>      Target ref for diff (base)
+    --source <ref>      Source ref for diff (tip)
     --commit <sha>      Analyze a specific commit
     --language <lang>   Force specific language context (e.g., python, sql)
     --dry-run, -n       Render prompt, check tokens, and exit (Validation Gate)
     --output-format     Output format: markdown (default) or json
     --debug             Enable verbose debug output
-    --help, -h          Show help message
 ```
 
-### Explain Wrapper (`explain.sh`)
+### Explain Command
 
 ```bash
-./scripts/explain.sh <repo_name> [options]
-# Equivalent to: ./scripts/New-Bundle.sh --repo <repo_name> --workflow explain_diff ...
+python cli.py explain --repo <repo_name> [OPTIONS]
+# Equivalent to: python cli.py analyze --repo <repo_name> --workflow explain_diff
 ```
 
 ## ⚙️ Configuration
@@ -175,11 +186,11 @@ Git Diff RAG supports analyzing **Stacked PRs** (dependent branches) efficiently
 ### The Workflow
 1.  **Analyze Layer 1 (Base)**:
     ```bash
-    ./scripts/New-Bundle.sh --repo my-app --target main --source feature-1
+    python cli.py analyze --repo my-app --target main --source feature-1
     ```
 2.  **Analyze Layer 2 (The Stack)**:
     ```bash
-    ./scripts/New-Bundle.sh --repo my-app --target feature-1 --source feature-2 --language python
+    python cli.py analyze --repo my-app --target feature-1 --source feature-2 --language python
     ```
 
 ### Why this works
@@ -189,7 +200,8 @@ Git Diff RAG supports analyzing **Stacked PRs** (dependent branches) efficiently
 
 ## 📂 Architecture
 
-- **`scripts/`**: Core logic (`New-Bundle.sh`, `call_gemini.py`, `db_manager.py`).
+- **`cli.py`**: Main Python CLI entry point for all analysis commands.
+- **`scripts/`**: Core logic modules (`call_gemini.py`, `db_manager.py`, `render_prompt.py`).
 - **`prompts/`**: Jinja2 templates.
     - **`recipes/`**: Ready-to-use workflows (`standard_pr_review.md`).
     - **`macros/`**: Reusable components (`_common.md`, `secret_scan.md`).
