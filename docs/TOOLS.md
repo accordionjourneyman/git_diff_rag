@@ -1,63 +1,70 @@
 # 🛠️ Tool Reference
 
-This document provides a reference for the core scripts and tools available in the `scripts/` directory.
+This document provides a reference for the core CLI commands and Python modules available in Git Diff RAG.
 
-## 🐚 CLI Scripts
+## 🐚 CLI Commands
 
-### `New-Bundle.sh`
-**Description**: The main orchestrator for the Git Diff RAG pipeline. It handles the entire flow: safety checks, diff generation, prompt rendering, and LLM execution.
+### `python cli.py`
+**Description**: The main entry point for all Git Diff RAG operations. A comprehensive Python CLI that replaces the legacy bash scripts.
 
-**Usage**:
+**Main Commands**:
+
+#### `analyze`
+Execute analysis workflow on git diff.
 ```bash
-./scripts/New-Bundle.sh --repo <repo_name> [OPTIONS]
+python cli.py analyze --repo <repo_name> [OPTIONS]
 ```
 
-**Options**:
+**Required Options**:
 - `--repo <name>`: Repository identifier (must match `repository-setup/<name>.md`).
-- `--workflow <name>`: Workflow to execute (default: `pr_review`).
+
+**Optional Options**:
+- `--workflow <name>`: Workflow to execute (default from config).
+- `--target <ref>`: Target ref for diff (base).
+- `--source <ref>`: Source ref for diff (tip).
 - `--commit <sha>`: Analyze a specific commit.
-- `--target <ref>`: Base reference for diff (default: `main`).
-- `--source <ref>`: Feature reference for diff (default: `HEAD`).
-- `--dry-run`: Render prompt and check tokens without calling the API.
+- `--language <lang>`: Force specific language context.
+- `--dry-run, -n`: Render prompt, check tokens, and exit.
+- `--output-format`: Output format: markdown (default) or json.
+- `--debug`: Enable verbose debug output.
 
----
-
-### `launch_agent.sh`
-**Description**: A wrapper script for launching the Gemini CLI agent with a specific prompt file. Used by the Cockpit for "Agentic Mode".
-
-**Usage**:
+#### `explain`
+Explain changes in plain language (convenience wrapper for analyze with explain_diff workflow).
 ```bash
-./scripts/launch_agent.sh <agent_name> <prompt_file> [apply_changes]
+python cli.py explain --repo <repo_name> [OPTIONS]
 ```
 
-**Arguments**:
-- `agent_name`: Currently supports `gemini`.
-- `prompt_file`: Path to the generated prompt text file.
-- `apply_changes`: `true` or `false` (determines approval mode).
-
----
-
-### `explain.sh`
-**Description**: A convenience wrapper around `New-Bundle.sh` specifically for the `explain_diff` workflow.
-
-**Usage**:
+#### `list-models`
+List available AI models for each provider.
 ```bash
-./scripts/explain.sh <repo_name>
+python cli.py list-models
+```
+
+#### `check-setup`
+Verify installation and configuration.
+```bash
+python cli.py check-setup
+```
+
+#### `list-repos`
+List configured repositories.
+```bash
+python cli.py list-repos
 ```
 
 ---
 
 ## 🐍 Python Modules
 
-### `db_manager.py`
+### `scripts/db_manager.py`
 **Description**: Manages the SQLite database for the Context Engine. Handles caching, history retrieval, and session logging.
 
-**Commands**:
-- `init`: Initialize the database schema.
-- `save`: Save an analysis result.
-- `get`: Retrieve a cached response.
-- `get-context`: Fetch recent history for a repository.
-- `search`: Semantic/Text search over history.
+**Key Functions**:
+- `init_database()`: Initialize the database schema.
+- `save_analysis()`: Save an analysis result with composite hash.
+- `get_cached_response()`: Retrieve a cached response by hash.
+- `get_repository_history()`: Fetch recent history for a repository.
+- `search_history()`: Semantic/Text search over history.
 
 **Example**:
 ```bash
@@ -66,49 +73,64 @@ python3 scripts/db_manager.py search my-repo "security vulnerability"
 
 ---
 
-### `render_prompt.py`
+### `scripts/render_prompt.py`
 **Description**: The Jinja2 rendering engine. It combines the prompt template, the git diff, and the repository context into a final payload.
 
 **Key Features**:
 - Auto-detects code languages in the diff.
-- Injects `{{ DIFF_CONTENT }}` and `{{ REPO_NAME }}` variables.
-- Supports custom macros from `prompts/macros`.
+- Injects `{{ DIFF_CONTENT }}`, `{{ REPO_NAME }}`, and `{{ OUTPUT_DIR }}` variables.
+- Supports custom macros from `prompts/macros/`.
+- Handles token pruning when limits are exceeded.
 
 ---
 
-### `call_gemini.py`
-**Description**: Handles interactions with the Google Gemini API. Includes retry logic, rate limiting, and token counting.
+### `scripts/call_gemini.py`
+**Description**: Handles interactions with Google Gemini providers (API and CLI). Includes retry logic, rate limiting, and token counting.
 
 **Key Functions**:
-- `call_with_retry(prompt, model)`: Executes the prompt with exponential backoff.
+- `call_gemini_api()`: Executes prompts via Gemini API with exponential backoff.
+- `call_gemini_cli()`: Executes prompts via Gemini CLI with full path resolution.
+- `is_gemini_cli_installed()`: Checks CLI availability using `shutil.which()`.
+- `is_gemini_cli_authenticated()`: Verifies CLI authentication status.
 - `list_models()`: Returns available Gemini models.
-- `count_tokens(prompt)`: Returns the token count for a given string.
+- `count_tokens()`: Returns the token count for a given string.
 
 ---
 
-### `checker_engine.py`
-**Description**: Runs static analysis rules defined in `.ragrules.yaml` or `global_rules.yaml`.
+### `scripts/call_copilot.py`
+**Description**: Handles interactions with GitHub Copilot CLI. Provides programmatic interface for Copilot analysis.
 
-**Features**:
-- **Secret Scanning**: Regex-based detection of keys/tokens.
-- **Deprecation Checks**: Warns if deprecated patterns are found in the diff.
-
----
-
-### `signal_processor.py`
-**Description**: Ingests external signals (like CI/CD results, linter output) to enrich the analysis context.
+**Key Functions**:
+- `call_copilot_cli()`: Executes prompts via Copilot CLI.
+- `is_copilot_cli_installed()`: Checks CLI availability.
+- `is_copilot_cli_authenticated()`: Verifies CLI authentication.
 
 ---
 
-### `session_summarizer.py`
-**Description**: Analyzes past agent sessions to extract "Lessons Learned" and update the repository's long-term memory in the database.
+### `scripts/validate_output.py`
+**Description**: Validates generated output against expected formats and performs quality checks.
+
+**Key Features**:
+- JSON schema validation for structured outputs.
+- Markdown formatting checks.
+- Content quality scoring.
 
 ---
 
-### `config_utils.py`
-**Description**: Utilities for loading and saving repository configurations (`repository-setup/*.md`). Used heavily by the Cockpit Settings tab.
+### `cockpit/app.py`
+**Description**: Streamlit web interface for Git Diff RAG. Provides visual diff browsing, prompt building, and history management.
+
+**Key Components**:
+- `main()`: Main application entry point.
+- `render_diff_viewer()`: Visual diff display with syntax highlighting.
+- `render_prompt_builder()`: Drag-and-drop prompt composition.
+- `render_history()`: Browse past analysis runs.
 
 ---
 
-### `ui_utils.py`
-**Description**: Backend logic for the Streamlit Cockpit. Handles Git operations, file tree generation, and diff parsing for the UI.
+### `cockpit/components/`
+**Description**: Reusable UI components for the Streamlit cockpit.
+
+- `diff_viewer.py`: Visual diff rendering with file tree navigation.
+- `file_tree.py`: Repository file tree component.
+- `prompt_editor.py`: VS Code-like prompt editing experience.

@@ -32,13 +32,7 @@ streamlit run cockpit/app.py
 
 [👉 Read the full Cockpit Documentation](docs/COCKPIT.md)
 
-## � Documentation
-
-- [**Architecture**](docs/ARCHITECTURE.md): High-level design and data flow.
-- [**Cockpit Guide**](docs/COCKPIT.md): How to use the GUI.
-- [**Tools Reference**](docs/TOOLS.md): CLI scripts and Python modules.
-
-## �🚀 Quick Start
+## 🚀 Quick Start
 
 ### 1. Setup
 ```bash
@@ -192,11 +186,11 @@ Git Diff RAG supports analyzing **Stacked PRs** (dependent branches) efficiently
 ### The Workflow
 1.  **Analyze Layer 1 (Base)**:
     ```bash
-    ./scripts/New-Bundle.sh --repo my-app --target main --source feature-1
+    python cli.py analyze --repo my-app --target main --source feature-1
     ```
 2.  **Analyze Layer 2 (The Stack)**:
     ```bash
-    ./scripts/New-Bundle.sh --repo my-app --target feature-1 --source feature-2 --language python
+    python cli.py analyze --repo my-app --target feature-1 --source feature-2 --language python
     ```
 
 ### Why this works
@@ -206,7 +200,8 @@ Git Diff RAG supports analyzing **Stacked PRs** (dependent branches) efficiently
 
 ## 📂 Architecture
 
-- **`scripts/`**: Core logic (`New-Bundle.sh`, `call_gemini.py`, `db_manager.py`).
+- **`cli.py`**: Main Python CLI entry point for all analysis commands.
+- **`scripts/`**: Core logic modules (`call_gemini.py`, `db_manager.py`, `render_prompt.py`).
 - **`prompts/`**: Jinja2 templates.
     - **`recipes/`**: Ready-to-use workflows (`standard_pr_review.md`).
     - **`macros/`**: Reusable components (`_common.md`, `secret_scan.md`).

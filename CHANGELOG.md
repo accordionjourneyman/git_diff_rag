@@ -2,6 +2,39 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.4.0] - 2025-12-23 - Python CLI Migration & Gemini CLI Support
+
+### ⚠️ BREAKING CHANGES
+
+This release migrates from legacy bash scripts to a modern Python CLI architecture.
+
+**Script Deprecations:**
+| Deprecated Script | Replacement |
+|-------------------|-------------|
+| `scripts/New-Bundle.sh` | `python cli.py analyze` |
+| `scripts/explain.sh` | `python cli.py explain` |
+| `scripts/launch_agent.sh` | Integrated into CLI |
+
+### Features
+
+- **Python CLI**: Complete rewrite with `cli.py` as the main entry point, replacing bash scripts.
+- **Gemini CLI Integration**: Added support for Google Gemini CLI with cross-platform path resolution using `shutil.which()`.
+- **Enhanced Setup Check**: `python cli.py check-setup` now verifies Gemini CLI installation and authentication.
+- **Improved Path Resolution**: All CLI commands use full paths to prevent PATH-related issues in different environments.
+
+### Improvements
+
+- **Cross-Platform Compatibility**: Python CLI works consistently across Linux, macOS, and Windows.
+- **Better Error Handling**: More descriptive error messages and graceful failure handling.
+- **Documentation Updates**: README.md, docs/TOOLS.md, and docs/ARCHITECTURE.md updated to reflect Python CLI architecture.
+
+### Fixes
+
+- **Gemini CLI PATH Issues**: Fixed "Gemini CLI is not installed or not in PATH" errors in Streamlit by using full executable paths.
+- **Template OUTPUT_DIR**: Fixed undefined variable error by moving output directory creation before prompt rendering.
+
+---
+
 ## [2.3.0] - 2025-12-23 - Cockpit UX & Auditability
 
 ### Features

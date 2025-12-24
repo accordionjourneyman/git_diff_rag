@@ -217,6 +217,25 @@ def cmd_check_setup(args: argparse.Namespace) -> int:
     else:
         print(f"  ⚠️  GEMINI_API_KEY not set (optional)")
     
+    # Check Gemini CLI
+    print("\n🔷 Gemini CLI:")
+    try:
+        from scripts import call_gemini_cli
+        if call_gemini_cli.is_gemini_cli_installed():
+            print(f"  ✓ Gemini CLI is installed")
+            
+            if call_gemini_cli.is_gemini_cli_authenticated():
+                print(f"  ✓ Authenticated")
+            else:
+                print(f"  ⚠️  Not authenticated - run 'gemini auth' to authenticate")
+                print(f"     (This is optional if using Gemini API)")
+        else:
+            print(f"  ⚠️  Gemini CLI not installed (optional)")
+            print(f"     Install from: https://github.com/google/gemini-cli")
+    except Exception as e:
+        print(f"  ✗ Error checking Gemini CLI: {e}")
+        all_ok = False
+    
     # Check Copilot CLI
     print("\n🤖 GitHub Copilot CLI:")
     if call_copilot_cli.is_copilot_installed():
