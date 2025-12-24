@@ -6,32 +6,18 @@ All notable changes to this project will be documented in this file.
 
 ### ⚠️ BREAKING CHANGES
 
-This release migrates from legacy bash scripts to a modern Python CLI architecture.
-
-**Script Deprecations:**
-| Deprecated Script | Replacement |
-|-------------------|-------------|
-| `scripts/New-Bundle.sh` | `python cli.py analyze` |
-| `scripts/explain.sh` | `python cli.py explain` |
-| `scripts/launch_agent.sh` | Integrated into CLI |
+Migrated orchestration from Bash scripts to Python CLI (cli.py). Legacy scripts are now deprecated wrappers.
 
 ### Features
 
-- **Python CLI**: Complete rewrite with `cli.py` as the main entry point, replacing bash scripts.
-- **Gemini CLI Integration**: Added support for Google Gemini CLI with cross-platform path resolution using `shutil.which()`.
-- **Enhanced Setup Check**: `python cli.py check-setup` now verifies Gemini CLI installation and authentication.
-- **Improved Path Resolution**: All CLI commands use full paths to prevent PATH-related issues in different environments.
+- **Universal CLI**: Modern argparse interface for all workflows.
+- **Copilot CLI**: Direct support for GitHub Copilot as a first-class LLM provider.
+- **Cross-Platform**: Full support for Windows, macOS, and Linux without external shell dependencies.
 
 ### Improvements
 
-- **Cross-Platform Compatibility**: Python CLI works consistently across Linux, macOS, and Windows.
-- **Better Error Handling**: More descriptive error messages and graceful failure handling.
-- **Documentation Updates**: README.md, docs/TOOLS.md, and docs/ARCHITECTURE.md updated to reflect Python CLI architecture.
-
-### Fixes
-
-- **Gemini CLI PATH Issues**: Fixed "Gemini CLI is not installed or not in PATH" errors in Streamlit by using full executable paths.
-- **Template OUTPUT_DIR**: Fixed undefined variable error by moving output directory creation before prompt rendering.
+- **Auditability**: WorkflowConfig is now frozen and serializable for reproducible runs.
+- **Error Handling**: Significantly improved traceback and error reporting in the orchestration layer.
 
 ---
 

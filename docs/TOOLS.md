@@ -85,25 +85,35 @@ python3 scripts/db_manager.py search my-repo "security vulnerability"
 ---
 
 ### `scripts/call_gemini.py`
-**Description**: Handles interactions with Google Gemini providers (API and CLI). Includes retry logic, rate limiting, and token counting.
+**Description**: Handles interactions with Google Gemini API. Includes retry logic, rate limiting, and token counting.
 
 **Key Functions**:
 - `call_gemini_api()`: Executes prompts via Gemini API with exponential backoff.
-- `call_gemini_cli()`: Executes prompts via Gemini CLI with full path resolution.
-- `is_gemini_cli_installed()`: Checks CLI availability using `shutil.which()`.
-- `is_gemini_cli_authenticated()`: Verifies CLI authentication status.
-- `list_models()`: Returns available Gemini models.
+- `get_client()`: Initializes and returns Gemini API client.
+- `list_models()`: Returns available Gemini API models.
 - `count_tokens()`: Returns the token count for a given string.
 
 ---
 
-### `scripts/call_copilot.py`
+### `scripts/call_gemini_cli.py`
+**Description**: Handles interactions with Google Gemini CLI. Provides programmatic interface for CLI-based analysis.
+
+**Key Functions**:
+- `call_gemini_cli()`: Executes prompts via Gemini CLI with full path resolution.
+- `is_gemini_cli_installed()`: Checks CLI availability using `shutil.which()`.
+- `is_gemini_cli_authenticated()`: Verifies CLI authentication status.
+- `get_available_models()`: Returns available Gemini CLI models.
+
+---
+
+### `scripts/call_copilot_cli.py`
 **Description**: Handles interactions with GitHub Copilot CLI. Provides programmatic interface for Copilot analysis.
 
 **Key Functions**:
 - `call_copilot_cli()`: Executes prompts via Copilot CLI.
-- `is_copilot_cli_installed()`: Checks CLI availability.
-- `is_copilot_cli_authenticated()`: Verifies CLI authentication.
+- `is_copilot_installed()`: Checks CLI availability.
+- `check_authentication()`: Verifies CLI authentication.
+- `get_available_models()`: Returns available Copilot models.
 
 ---
 
