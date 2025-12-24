@@ -8,6 +8,7 @@ import os
 import sys
 import hashlib
 import re
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Dict, Any, Tuple
@@ -17,10 +18,15 @@ import logging
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from scripts import config_utils, db_manager, git_operations, clipboard
-from scripts.render_prompt import render_template, detect_languages
-from scripts import call_gemini
-from scripts import call_copilot_cli
+from scripts import config_utils, db_manager
+from scripts.diff_engine import (
+    is_valid_repository, is_clean_working_directory, determine_refs,
+    get_diff, GitError
+)
+from scripts.prompt_builder import build_prompt_with_context, detect_languages
+from scripts.execution_engine import (
+    execute_workflow_step, scan_for_secrets, ExecutionError, LLMError
+)
 
 # Setup logging
 logging.basicConfig(
@@ -36,44 +42,96 @@ class WorkflowError(Exception):
     pass
 
 
+class ConfigError(WorkflowError):
+    """Raised when configuration is invalid."""
+    pass
+
+
+class GitError(WorkflowError):
+    """Raised when git operations fail."""
+    pass
+
+
+class LLMError(WorkflowError):
+    """Raised when LLM operations fail."""
+    pass
+
+
+@dataclass(frozen=True)
 class WorkflowConfig:
-    """Configuration for a single workflow execution."""
+    """Immutable configuration for a single workflow execution.
     
-    def __init__(
-        self,
-        repo_name: str,
-        workflow: Optional[str] = None,
-        target_ref: Optional[str] = None,
-        source_ref: Optional[str] = None,
-        commit: Optional[str] = None,
-        dry_run: bool = False,
-        output_format: str = 'markdown',
-        language: Optional[str] = None,
-        debug: bool = False
-    ):
-        self.repo_name = repo_name
-        self.workflow = workflow
-        self.target_ref = target_ref
-        self.source_ref = source_ref
-        self.commit = commit
-        self.dry_run = dry_run
-        self.output_format = output_format
-        self.language = language
-        self.debug = debug
-        
-        # Loaded from config file
-        self.repo_config: Dict[str, Any] = {}
-        self.repo_path: str = ""
-        self.main_branch: str = "main"
-        self.remote: str = "origin"
-        self.workflow_config: Dict[str, Any] = {}
+    This dataclass is frozen (immutable) to ensure:
+    - Job Safety: Config cannot be accidentally modified during execution
+    - Auditability: Config can be serialized and stored with each analysis
+    - Reproducibility: Historical analyses can be replayed with exact config
+    
+    Use with_updates() to create a new config with modified values.
+    """
+    # Core settings (from user input)
+    repo_name: str
+    workflow: Optional[str] = None
+    target_ref: Optional[str] = None
+    source_ref: Optional[str] = None
+    commit: Optional[str] = None
+    dry_run: bool = False
+    output_format: str = 'markdown'
+    language: Optional[str] = None
+    debug: bool = False
+    llm: Optional[str] = None
+    model: Optional[str] = None
+    
+    # Loaded from config file (populated by load_workflow_config)
+    repo_config: Dict[str, Any] = field(default_factory=dict)
+    repo_path: str = ""
+    main_branch: str = "main"
+    remote: str = "origin"
+    workflow_config: Dict[str, Any] = field(default_factory=dict)
+    
+    def to_json(self) -> str:
+        """Serialize config to JSON for storage/auditability."""
+        import json
+        # Convert to dict, handling non-serializable types
+        data = {
+            'repo_name': self.repo_name,
+            'workflow': self.workflow,
+            'target_ref': self.target_ref,
+            'source_ref': self.source_ref,
+            'commit': self.commit,
+            'dry_run': self.dry_run,
+            'output_format': self.output_format,
+            'language': self.language,
+            'debug': self.debug,
+            'llm': self.llm,
+            'model': self.model,
+            'repo_path': self.repo_path,
+            'main_branch': self.main_branch,
+            'remote': self.remote,
+            # Don't include repo_config/workflow_config - they're large and derived
+        }
+        return json.dumps(data, indent=2, default=str)
+    
+    @classmethod
+    def from_json(cls, json_str: str) -> 'WorkflowConfig':
+        """Deserialize config from JSON."""
+        import json
+        data = json.loads(json_str)
+        return cls(**data)
+    
+    def with_updates(self, **kwargs) -> 'WorkflowConfig':
+        """Create a new config with updated values (immutable pattern)."""
+        from dataclasses import replace
+        return replace(self, **kwargs)
 
 
-def load_workflow_config(wf_config: WorkflowConfig) -> None:
+def load_workflow_config(wf_config: WorkflowConfig) -> WorkflowConfig:
     """Load repository and workflow configuration from YAML file.
     
     Args:
-        wf_config: WorkflowConfig object to populate
+        wf_config: WorkflowConfig object with repo_name set
+        
+    Returns:
+        New WorkflowConfig with loaded settings (immutable pattern)
         
     Raises:
         WorkflowError: If config file not found or invalid
@@ -83,31 +141,42 @@ def load_workflow_config(wf_config: WorkflowConfig) -> None:
     if not setup_file.exists():
         raise WorkflowError(f"Repository setup file not found: {setup_file}")
     
-    wf_config.repo_config = config_utils.load_repo_config(wf_config.repo_name)
+    repo_config = config_utils.load_repo_config(wf_config.repo_name)
     
-    if not wf_config.repo_config:
+    if not repo_config:
         raise WorkflowError(f"Failed to parse config from {setup_file}")
     
     # Extract core settings
-    wf_config.repo_path = wf_config.repo_config.get('path', '')
-    wf_config.main_branch = wf_config.repo_config.get('main_branch', 'main')
-    wf_config.remote = wf_config.repo_config.get('remote', 'origin')
+    repo_path = repo_config.get('path', '')
+    main_branch = repo_config.get('main_branch', 'main')
+    remote = repo_config.get('remote', 'origin')
     
     # Determine workflow
-    if not wf_config.workflow:
-        wf_config.workflow = wf_config.repo_config.get('default_workflow', 'pr_review')
+    workflow = wf_config.workflow or repo_config.get('default_workflow', 'pr_review')
     
     # Load workflow-specific config
-    wf_config.workflow_config = wf_config.repo_config.get(wf_config.workflow, {})
+    workflow_config = repo_config.get(workflow, {})
     
-    if not wf_config.workflow_config:
+    if not workflow_config:
         raise WorkflowError(
-            f"Workflow '{wf_config.workflow}' not defined in {setup_file}"
+            f"Workflow '{workflow}' not defined in {setup_file}"
         )
     
-    logger.info(f"Target: {wf_config.repo_name} ({wf_config.repo_path})")
-    logger.info(f"Workflow: {wf_config.workflow}")
-    logger.info(f"Mode: {'DRY RUN' if wf_config.dry_run else 'LIVE'}")
+    # Create new immutable config with loaded settings
+    loaded_config = wf_config.with_updates(
+        workflow=workflow,
+        repo_config=repo_config,
+        repo_path=repo_path,
+        main_branch=main_branch,
+        remote=remote,
+        workflow_config=workflow_config
+    )
+    
+    logger.info(f"Target: {loaded_config.repo_name} ({loaded_config.repo_path})")
+    logger.info(f"Workflow: {loaded_config.workflow}")
+    logger.info(f"Mode: {'DRY RUN' if loaded_config.dry_run else 'LIVE'}")
+    
+    return loaded_config
 
 
 def validate_repository(wf_config: WorkflowConfig) -> None:
@@ -117,12 +186,12 @@ def validate_repository(wf_config: WorkflowConfig) -> None:
         wf_config: WorkflowConfig with repo_path set
         
     Raises:
-        WorkflowError: If repository invalid or has uncommitted changes
+        GitError: If repository invalid or has uncommitted changes
     """
-    if not git_operations.is_valid_repository(wf_config.repo_path):
-        raise WorkflowError(f"Not a git repository: {wf_config.repo_path}")
+    if not is_valid_repository(wf_config.repo_path):
+        raise GitError(f"Not a git repository: {wf_config.repo_path}")
     
-    is_clean, status = git_operations.is_clean_working_directory(wf_config.repo_path)
+    is_clean, status = is_clean_working_directory(wf_config.repo_path)
     if not is_clean:
         logger.warning(f"Uncommitted changes detected:\n{status}")
         # Don't error - just warn. Users may want to analyze work-in-progress
@@ -137,25 +206,16 @@ def determine_refs(wf_config: WorkflowConfig) -> Tuple[str, str]:
     Returns:
         Tuple of (target_ref, source_ref)
     """
-    # Determine target (base)
-    if wf_config.target_ref:
-        target_ref = wf_config.target_ref
-    elif wf_config.commit:
-        target_ref = f"{wf_config.commit}~1"
-    else:
-        target_ref = f"{wf_config.remote}/{wf_config.main_branch}"
-    
-    # Determine source (tip)
-    if wf_config.source_ref:
-        source_ref = wf_config.source_ref
-    elif wf_config.commit:
-        source_ref = wf_config.commit
-    else:
-        source_ref = "HEAD"
-    
-    logger.info(f"Generating git diff: {target_ref}...{source_ref}")
-    
-    return target_ref, source_ref
+    from scripts.diff_engine import determine_refs as determine_refs_func
+    target, source = determine_refs_func(
+        wf_config.target_ref,
+        wf_config.source_ref,
+        wf_config.commit,
+        wf_config.remote,
+        wf_config.main_branch
+    )
+    logger.info(f"Generating git diff: {target}...{source}")
+    return target, source
 
 
 def generate_diff(
@@ -176,13 +236,13 @@ def generate_diff(
         Diff content as string
     """
     try:
-        diff_content = git_operations.get_diff(
+        diff_content = get_diff(
             wf_config.repo_path,
             target_ref,
             source_ref,
             stat_only=False
         )
-    except git_operations.GitOperationError as e:
+    except GitError as e:
         raise WorkflowError(f"Failed to generate diff: {e}")
     
     if not diff_content.strip():
@@ -197,7 +257,7 @@ def generate_diff(
                 f"Diff too large (~{estimated_tokens} tokens > {token_limit} limit). "
                 f"Pruning to --stat summary."
             )
-            diff_content = git_operations.get_diff(
+            diff_content = get_diff(
                 wf_config.repo_path,
                 target_ref,
                 source_ref,
@@ -207,220 +267,10 @@ def generate_diff(
     return diff_content
 
 
-def scan_for_secrets(diff_content: str) -> list[str]:
-    """Scan diff for potential secrets/credentials.
-    
-    Args:
-        diff_content: The git diff text
-        
-    Returns:
-        List of findings (empty if no secrets detected)
-    """
-    findings = []
-    
-    # Common secret patterns
-    patterns = {
-        'API Key': r'["\']?api[_-]?key["\']?\s*[:=]\s*["\']?[\w-]{20,}',
-        'Password': r'["\']?password["\']?\s*[:=]\s*["\'][^"\']{8,}',
-        'Token': r'["\']?token["\']?\s*[:=]\s*["\']?[\w-]{20,}',
-        'AWS Key': r'AKIA[0-9A-Z]{16}',
-        'Private Key': r'-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----'
-    }
-    
-    for secret_type, pattern in patterns.items():
-        matches = re.finditer(pattern, diff_content, re.IGNORECASE)
-        for match in matches:
-            findings.append(f"{secret_type}: {match.group(0)[:50]}...")
-    
-    if findings:
-        logger.warning(f"⚠️  Potential secrets detected: {len(findings)} findings")
-        for finding in findings:
-            logger.warning(f"  - {finding}")
-    
-    return findings
 
 
-def check_cache(diff_hash: str, prompt_hash: str, model: str) -> Optional[str]:
-    """Check database cache for existing analysis.
-    
-    Args:
-        diff_hash: SHA256 hash of diff content
-        prompt_hash: SHA256 hash of base prompt
-        model: Model name
-        
-    Returns:
-        Cached response or None
-    """
-    try:
-        result = db_manager.get_cache(diff_hash, prompt_hash, model)
-        if result:
-            logger.info("✓ Cache hit! Returning cached response.")
-            return result.get('response', '')
-    except Exception as e:
-        logger.warning(f"Cache check failed: {e}")
-    
-    return None
 
 
-def render_prompt_with_context(
-    wf_config: WorkflowConfig,
-    diff_content: str,
-    prompt_template: str
-) -> Tuple[str, str]:
-    """Render Jinja2 prompt with context injection.
-    
-    Args:
-        wf_config: WorkflowConfig
-        diff_content: Git diff content
-        prompt_template: Path to prompt template file
-        
-    Returns:
-        Tuple of (full_prompt, base_prompt_for_hashing)
-    """
-    # Detect languages from diff
-    languages = detect_languages(diff_content)
-    if wf_config.language:
-        languages = [wf_config.language]
-    
-    # Get historical context (last 3 analyses)
-    context_history = []
-    try:
-        context_history = db_manager.get_context(wf_config.repo_name, limit=3)
-    except Exception as e:
-        logger.warning(f"Failed to load context history: {e}")
-    
-    # Render base prompt (without context - for cache key)
-    env_vars = {}
-    if languages:
-        env_vars['CODE_LANGUAGE'] = languages[0]
-
-    base_prompt = render_template(
-        template_path=prompt_template,
-        diff_content=diff_content,
-        repo_name=wf_config.repo_name,
-        context_data=[],  # Empty for base
-        env_vars=env_vars,
-        inject_diff_content=True
-    )
-    
-    # Render full prompt (with context)
-    full_prompt = render_template(
-        template_path=prompt_template,
-        diff_content=diff_content,
-        repo_name=wf_config.repo_name,
-        context_data=context_history,
-        env_vars=env_vars,
-        inject_diff_content=True
-    )
-    
-    return full_prompt, base_prompt
-
-
-def call_llm(
-    wf_config: WorkflowConfig,
-    prompt: str
-) -> str:
-    """Call the appropriate LLM based on workflow config.
-    
-    Args:
-        wf_config: WorkflowConfig with workflow_config set
-        prompt: The rendered prompt
-        
-    Returns:
-        LLM response
-        
-    Raises:
-        WorkflowError: If LLM call fails
-    """
-    llm_provider = wf_config.workflow_config.get('llm', 'copilot')
-    model = wf_config.workflow_config.get('model', 'gemini-1.5-flash')
-    
-    try:
-        # Use Strategy Pattern for LLM provider selection
-        from scripts.llm_strategy import get_provider
-        
-        provider = get_provider(llm_provider)
-        
-        if not provider.is_available():
-            raise WorkflowError(
-                f"LLM provider '{llm_provider}' is not available. "
-                f"Check installation and authentication."
-            )
-        
-        logger.info(f"🤖 Calling {llm_provider} ({model})...")
-        
-        # Call the provider with appropriate parameters
-        if llm_provider == 'gh-copilot':
-            response = provider.call(
-                prompt,
-                allow_tools=['shell(git)', 'write'],
-                timeout=300
-            )
-        else:
-            response = provider.call(prompt, model=model)
-        
-        return response
-            
-    except ValueError as e:
-        # Unknown provider
-        raise WorkflowError(str(e))
-    except call_copilot_cli.CopilotNotInstalledError as e:
-        raise WorkflowError(f"Copilot CLI not available: {e}")
-    except call_copilot_cli.CopilotAuthError as e:
-        raise WorkflowError(f"Copilot CLI authentication failed: {e}")
-    except Exception as e:
-        raise WorkflowError(f"LLM call failed: {e}")
-
-
-def save_results(
-    wf_config: WorkflowConfig,
-    diff_content: str,
-    full_prompt: str,
-    base_prompt: str,
-    response: str,
-    output_dir: Path
-) -> None:
-    """Save workflow results to disk and database.
-    
-    Args:
-        wf_config: WorkflowConfig
-        diff_content: Git diff content
-        full_prompt: Rendered prompt with context
-        base_prompt: Rendered prompt without context (for hashing)
-        response: LLM response
-        output_dir: Directory to save artifacts
-    """
-    # Save to disk
-    output_dir.mkdir(parents=True, exist_ok=True)
-    
-    (output_dir / "diff.patch").write_text(diff_content, encoding='utf-8')
-    (output_dir / "prompt.txt").write_text(full_prompt, encoding='utf-8')
-    (output_dir / "prompt_base.txt").write_text(base_prompt, encoding='utf-8')
-    
-    output_file = output_dir / f"llm_result.{wf_config.output_format}"
-    output_file.write_text(response, encoding='utf-8')
-    
-    logger.info(f"📂 Artifacts saved to: {output_dir}")
-    
-    # Save to database (if not manual copilot mode)
-    if not response.startswith("[COPILOT_MANUAL_MODE]"):
-        try:
-            diff_hash = hashlib.sha256(diff_content.encode()).hexdigest()
-            prompt_hash = hashlib.sha256(base_prompt.encode()).hexdigest()
-            model = wf_config.workflow_config.get('model', 'unknown')
-            
-            db_manager.save_cache(
-                diff_hash=diff_hash,
-                prompt_hash=prompt_hash,
-                model=model,
-                response=response,
-                repo_name=wf_config.repo_name,
-                summary=response[:200] + "...",
-                tags=wf_config.workflow
-            )
-            logger.info("💾 Results saved to database cache")
-        except Exception as e:
-            logger.warning(f"Failed to save to database: {e}")
 
 
 def run_workflow(wf_config: WorkflowConfig) -> Dict[str, Any]:
@@ -435,8 +285,8 @@ def run_workflow(wf_config: WorkflowConfig) -> Dict[str, Any]:
     Raises:
         WorkflowError: If workflow fails
     """
-    # 1. Load configuration
-    load_workflow_config(wf_config)
+    # 1. Load configuration (returns new immutable config)
+    wf_config = load_workflow_config(wf_config)
     
     # 2. Validate repository
     validate_repository(wf_config)
@@ -461,10 +311,8 @@ def run_workflow(wf_config: WorkflowConfig) -> Dict[str, Any]:
     if findings:
         logger.warning("⚠️  Secrets detected in diff. Review before sharing.")
     
-    # 6. Check cache
-    diff_hash = hashlib.sha256(diff_content.encode()).hexdigest()
+    # 6. Get prompt template
     prompt_template = wf_config.workflow_config.get('prompt')
-    
     if not prompt_template:
         raise WorkflowError(f"Workflow '{wf_config.workflow}' missing 'prompt' field")
     
@@ -473,62 +321,25 @@ def run_workflow(wf_config: WorkflowConfig) -> Dict[str, Any]:
     if not prompt_path.exists():
         raise WorkflowError(f"Prompt template not found: {prompt_path}")
     
-    # 7. Render prompt
-    full_prompt, base_prompt = render_prompt_with_context(
-        wf_config,
-        diff_content,
-        str(prompt_path)
-    )
-    
-    prompt_hash = hashlib.sha256(base_prompt.encode()).hexdigest()
-    model = wf_config.workflow_config.get('model', 'unknown')
-    
-    # Check cache
-    cached_response = check_cache(diff_hash, prompt_hash, model)
-    
-    # 8. Prepare output directory
-    timestamp = datetime.now().strftime("%Y%m%dT%H%M%S")
-    output_dir = PROJECT_ROOT / "output" / f"{timestamp}-{wf_config.repo_name}-{wf_config.workflow}"
-    
-    # 9. Dry run mode
-    if wf_config.dry_run:
-        logger.info("✓ Dry run: Prompt rendered successfully")
-        estimated_tokens = len(full_prompt) // 4
-        logger.info(f"📊 Estimated tokens: ~{estimated_tokens}")
-        
-        output_dir.mkdir(parents=True, exist_ok=True)
-        (output_dir / "prompt.txt").write_text(full_prompt, encoding='utf-8')
-        logger.info(f"📄 Prompt saved to: {output_dir / 'prompt.txt'}")
-        
-        return {
-            'success': True,
-            'dry_run': True,
-            'output_dir': str(output_dir),
-            'estimated_tokens': estimated_tokens
-        }
-    
-    # 10. Use cache or call LLM
-    if cached_response:
-        response = cached_response
-    else:
-        response = call_llm(wf_config, full_prompt)
-    
-    # 11. Save results
-    save_results(
-        wf_config,
-        diff_content,
-        full_prompt,
-        base_prompt,
-        response,
-        output_dir
-    )
-    
-    return {
-        'success': True,
-        'output_dir': str(output_dir),
-        'response': response,
-        'cached': cached_response is not None
+    # 7. Execute workflow step (LLM call, caching, results)
+    wf_config_dict = {
+        'repo_name': wf_config.repo_name,
+        'workflow': wf_config.workflow,
+        'model': wf_config.model or wf_config.workflow_config.get('model', 'unknown'),
+        'llm': wf_config.llm or wf_config.workflow_config.get('llm', 'copilot'),
+        'dry_run': wf_config.dry_run,
+        'output_format': wf_config.output_format,
     }
+    
+    result = execute_workflow_step(
+        wf_config_dict,
+        diff_content,
+        str(prompt_path),
+        target_ref=target_ref,
+        source_ref=source_ref
+    )
+    
+    return result
 
 
 def main():

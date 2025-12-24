@@ -1,53 +1,106 @@
-# Git Diff RAG - Next Steps & Testing Guide
+# Next Steps - Git Diff RAG Testing Checklist
 
-## Overview
+**Version 3.0.0 Refactoring - PR Readiness Verification**
 
-The git_diff_rag tool has been modernized with:
-- ✅ Python-first architecture (replacing bash orchestration)
-- ✅ GitHub Copilot CLI integration
-- ✅ Cross-platform support (Windows, macOS, Linux)
-- ✅ Streamlit UI with Copilot CLI option
+This document outlines the comprehensive testing checklist to ensure the refactored codebase is stable and ready for merge.
 
-This document outlines required testing and future enhancements.
+## Phase 1: Stabilization & Documentation ✅
+
+- [x] Update README.md for Python-first CLI usage
+- [x] Create this NEXT_STEPS.md file
+- [x] Enhance db_manager.py with schema versioning
+
+## Phase 2: Architectural Refactoring
+
+### Module Extraction
+- [x] Create `scripts/diff_engine.py` (Git operations consolidation)
+- [x] Create `scripts/prompt_builder.py` (Jinja2 rendering isolation)
+- [x] Create `scripts/execution_engine.py` (LLM execution and caching)
+- [x] Refactor `scripts/orchestrator.py` to thin coordinator (<200 lines)
+
+### SOLID Principles Implementation
+- [x] Implement frozen dataclass WorkflowConfig (maintain immutability)
+- [x] Add specific exceptions: GitError, LLMError, ConfigError, ClipboardError
+- [x] Simplify clipboard.py (fail-fast approach)
+
+## Phase 3: Testing & Validation
+
+### Unit Tests
+- [ ] Test diff_engine.py: Git operations, tiered history
+- [ ] Test prompt_builder.py: Template rendering, macro processing
+- [ ] Test execution_engine.py: LLM calls, caching, middleware
+- [ ] Test orchestrator.py: Coordination logic
+- [ ] Test WorkflowConfig: dataclass validation, serialization
+- [ ] Test exception hierarchy: Proper error context
+
+### Integration Tests
+- [ ] End-to-end workflow execution (analyze command)
+- [ ] Dry-run validation (token counting, prompt rendering)
+- [ ] Cache hit/miss scenarios
+- [ ] Multi-recipe prompt stacking
+
+### Cross-Platform Validation
+- [ ] Linux environment (primary)
+- [ ] Windows compatibility (if applicable)
+- [ ] macOS compatibility (if applicable)
+
+### Performance Benchmarks
+- [ ] Large diff processing (>100k tokens)
+- [ ] Cache performance (SQLite queries)
+- [ ] Memory usage during execution
+
+## Phase 4: Documentation & Cleanup
+
+### Documentation Updates
+- [ ] Update docs/ARCHITECTURE.md with new module structure
+- [ ] Update docs/TOOLS.md with CLI reference
+- [ ] Update CHANGELOG.md with refactoring details
+
+### Code Cleanup
+- [ ] Remove deprecated bash scripts (New-Bundle.sh, explain.sh, etc.)
+- [ ] Remove unused imports and dead code
+- [ ] Update import statements in cockpit/app.py
+
+## Verification Checklist
+
+### Pre-Merge Gates
+- [ ] All unit tests pass (pytest)
+- [ ] Integration tests pass
+- [ ] Manual E2E testing completed
+- [ ] Documentation updated and accurate
+- [ ] No breaking changes to public APIs
+- [ ] Backward compatibility maintained for cockpit
+
+### Post-Merge Validation
+- [ ] CI/CD pipeline passes
+- [ ] No regressions in existing functionality
+- [ ] Performance benchmarks meet requirements
+- [ ] User acceptance testing (if applicable)
+
+## Risk Assessment
+
+### High Risk Items
+- Orchestrator splitting: Potential breaking changes to cockpit imports
+- Dataclass validation: Ensure proper validation in WorkflowConfig
+- Exception hierarchy: May require updates to error handling code
+
+### Mitigation Strategies
+- Implement compatibility shims during transition
+- Maintain frozen dataclass interface for immutability
+- Add contextual information to all exceptions
+
+## Success Criteria
+
+- [ ] Code coverage >80% (target)
+- [ ] Zero critical bugs in manual testing
+- [ ] Performance within 10% of baseline
+- [ ] Documentation completeness >95%
+- [ ] No deprecated code remaining
 
 ---
 
-## 1. Prerequisites Verification
-
-### GitHub Copilot CLI Installation
-
-The tool expects GitHub Copilot CLI to be installed and authenticated:
-
-```powershell
-# Check if installed
-copilot --version
-
-# If not installed, follow:
-# https://docs.github.com/en/copilot/how-tos/set-up/install-copilot-cli
-
-# Authenticate (will open browser)
-copilot
-```
-
-**Expected:** User should already have Copilot CLI installed and configured with GitHub account.
-
-### Python Dependencies
-
-Install optional clipboard support:
-
-```powershell
-pip install pyperclip
-```
-
-Or on Windows, for better clipboard integration:
-
-```powershell
-pip install pywin32
-```
-
----
-
-## 2. End-to-End Testing Plan
+*Last Updated: December 24, 2025*
+*Status: Phase 2 Complete - Major refactoring implemented. Orchestrator reduced from 670 to 399 lines. All new modules created and integrated. Some tests need updates for simplified clipboard module.*
 
 ### Test 1: Basic Workflow (Dry Run)
 

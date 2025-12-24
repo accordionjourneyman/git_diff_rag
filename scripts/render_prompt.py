@@ -4,7 +4,7 @@ import sys
 import os
 import re
 import json
-from jinja2 import Environment, meta, FileSystemLoader
+from jinja2 import Environment, meta, FileSystemLoader, StrictUndefined
 
 def detect_languages(diff_text):
     # Scan for "diff --git a/path/to/file.ext"
@@ -26,7 +26,10 @@ def detect_languages(diff_text):
     
     return list(languages) if languages else ['unknown']
 
-def render_template(template_path, diff_content, repo_name="unknown", context_data=None, signals_data=None, docs_data=None, findings_data=None, env_vars=None, inject_diff_content=True):
+def render_template(template_path, diff_content, repo_name="unknown", context_data=None, 
+                    signals_data=None, docs_data=None, findings_data=None, env_vars=None, 
+                    inject_diff_content=True, commit_history_data=None, target_ref=None, 
+                    source_ref=None, OUTPUT_DIR=None, **kwargs):
     if env_vars is None:
         env_vars = os.environ
 
@@ -36,7 +39,7 @@ def render_template(template_path, diff_content, repo_name="unknown", context_da
     prompts_dir = os.path.join(repo_root, 'prompts')
 
     # Init Jinja2 with loader
-    env = Environment(loader=FileSystemLoader([prompts_dir, repo_root, os.getcwd()]))
+    env = Environment(loader=FileSystemLoader([prompts_dir, repo_root, os.getcwd()]), undefined=StrictUndefined)
 
     # Config extraction
     code_lang_config = env_vars.get('CODE_LANGUAGE', 'auto')
@@ -54,8 +57,16 @@ def render_template(template_path, diff_content, repo_name="unknown", context_da
         "CONTEXT": context_data or [],
         "SIGNALS": signals_data or [],
         "DOCS": docs_data or [],
-        "FINDINGS": findings_data or []
+        "FINDINGS": findings_data or [],
+        # New: Commit history context
+        "COMMIT_HISTORY": commit_history_data or {},
+        "TARGET_REF": target_ref or "unknown",
+        "SOURCE_REF": source_ref or "unknown",
+        "OUTPUT_DIR": OUTPUT_DIR or "unknown"
     }
+    
+    # Add any additional kwargs to the template context
+    provided.update(kwargs)
 
     # Load Template
     if os.path.exists(template_path):

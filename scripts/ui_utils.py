@@ -58,14 +58,32 @@ def get_smart_refs(repo_path, target, source, target_commit=None, source_commit=
     return final_target, final_source, is_direct
 
 def get_commits(repo_path, ref, limit=20):
-    """Get list of recent commits for a reference."""
+    """Get list of recent commits for a reference with full metadata."""
     try:
+        # Format: hash|date|author|subject
+        # Use a delimiter that is unlikely to appear in the subject, like 0x1f (Unit Separator) but keep it simple with explicit distinct char.
+        # Pipe | might be in commit messages. Let's use a custom delimiter string.
+        delimiter = "|||"
         result = subprocess.run(
-            ["git", "-C", repo_path, "log", ref, "-n", str(limit), "--format=%h - %s (%cr)"],
+            ["git", "-C", repo_path, "log", ref, "-n", str(limit), f"--date=iso", f"--format=%h{delimiter}%ad{delimiter}%an{delimiter}%s"],
             capture_output=True, text=True, check=True
         )
-        return [{"hash": line.split(" - ")[0], "label": line} for line in result.stdout.splitlines() if line.strip()]
-    except Exception:
+        
+        commits = []
+        for line in result.stdout.splitlines():
+            if not line.strip(): continue
+            parts = line.split(delimiter)
+            if len(parts) >= 4:
+                commits.append({
+                    "hash": parts[0],
+                    "date": parts[1],
+                    "author": parts[2],
+                    "message": parts[3],
+                    "label": f"{parts[0]} - {parts[3]} ({parts[1]})" # Legacy label
+                })
+        return commits
+    except Exception as e:
+        print(f"Error fetching commits: {e}")
         return []
 
 def get_changed_files(repo_path, target, source, target_commit=None, source_commit=None):
@@ -164,18 +182,47 @@ def get_session_details(session_id):
     conn.close()
     return dict(row) if row else None
 
+    return dict(row) if row else None
+
 def list_prompt_library():
-    """Recursively list all markdown files in the prompts/ directory."""
+    """Recursively list all markdown files in the prompts/ directory with metadata."""
     library = []
     prompts_dir = "prompts"
+    
+    # Lazy import yaml to avoid startup cost if not needed immediately
+    try:
+        import yaml
+    except ImportError:
+        yaml = None
+
     for root, dirs, files in os.walk(prompts_dir):
         for file in files:
             if file.endswith(".md"):
                 full_path = os.path.join(root, file)
                 rel_path = os.path.relpath(full_path, prompts_dir)
+                
+                # Parse Frontmatter
+                description = None
+                tags = []
+                try:
+                    with open(full_path, 'r', encoding='utf-8') as f:
+                        content = f.read()
+                        if content.startswith("---\n"):
+                            # Extract frontmatter block
+                            parts = content.split("---\n", 2)
+                            if len(parts) >= 3 and yaml:
+                                meta = yaml.safe_load(parts[1])
+                                if isinstance(meta, dict):
+                                    description = meta.get('description')
+                                    tags = meta.get('tags', [])
+                except Exception:
+                    pass
+
                 library.append({
                     "name": rel_path,
-                    "full_path": os.path.abspath(full_path)
+                    "full_path": os.path.abspath(full_path),
+                    "description": description,
+                    "tags": tags
                 })
     return sorted(library, key=lambda x: x['name'])
 

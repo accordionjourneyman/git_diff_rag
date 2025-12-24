@@ -223,3 +223,84 @@ def get_repository_root(repo_path: str) -> str:
     """
     result = run_git_command(repo_path, ['rev-parse', '--show-toplevel'])
     return result.stdout.strip()
+
+
+def get_commits_between(repo_path: str, target_ref: str, source_ref: str,
+                        tier1_limit: int = 10, tier2_limit: int = 50,
+                        body_max_chars: int = 500) -> dict:
+    """Get commits between two refs with tiered density.
+    
+    Uses the "Density vs. Horizon" rule:
+    - Tier 1 (1-10): Full metadata (author, date, subject, body, truncated flag)
+    - Tier 2 (11-50): One-line summary only (hash, date, subject)
+    - Tier 3 (50+): Excluded entirely
+    
+    Args:
+        repo_path: Path to the git repository
+        target_ref: Base reference (e.g., 'main')
+        source_ref: Feature reference (e.g., 'HEAD')
+        tier1_limit: Full detail for first N commits (default: 10)
+        tier2_limit: One-line summary for commits up to N (default: 50)
+        body_max_chars: Max chars for commit body before truncation (default: 500)
+        
+    Returns:
+        Dictionary with:
+        - 'tier1': List of full commit dicts
+        - 'tier2': List of summary commit dicts
+        - 'total_count': Total commits in range
+        - 'truncated_count': Number of commits excluded (beyond tier2_limit)
+    """
+    # Format: hash, author, date, subject, body (separated by null bytes)
+    # Use record separator (0x1E) between commits to handle multi-line bodies
+    args = ['log', '--format=%H%x00%an%x00%ai%x00%s%x00%b%x1E', 
+            f'{target_ref}..{source_ref}']
+    result = run_git_command(repo_path, args, check=False)
+    
+    if result.returncode != 0:
+        return {
+            'tier1': [],
+            'tier2': [],
+            'total_count': 0,
+            'truncated_count': 0
+        }
+    
+    all_commits = []
+    for entry in result.stdout.split('\x1E'):
+        entry = entry.strip()
+        if not entry:
+            continue
+        parts = entry.split('\x00')
+        if len(parts) >= 4:
+            body = parts[4].strip() if len(parts) > 4 else ''
+            is_truncated = len(body) > body_max_chars
+            all_commits.append({
+                'hash': parts[0][:8],  # Short SHA
+                'full_hash': parts[0],  # Keep full hash for reference
+                'author': parts[1],
+                'date': parts[2].split()[0],  # Date only, no time
+                'subject': parts[3],
+                'body': body[:body_max_chars] + (' [...Truncated for Context...]' if is_truncated else ''),
+                'truncated': is_truncated
+            })
+    
+    total = len(all_commits)
+    
+    # Tier 1: Full metadata
+    tier1 = all_commits[:tier1_limit]
+    
+    # Tier 2: Strip to one-line format (remove body and author)
+    tier2_raw = all_commits[tier1_limit:tier2_limit]
+    tier2 = []
+    for commit in tier2_raw:
+        tier2.append({
+            'hash': commit['hash'],
+            'date': commit['date'],
+            'subject': commit['subject']
+        })
+    
+    return {
+        'tier1': tier1,
+        'tier2': tier2,
+        'total_count': total,
+        'truncated_count': max(0, total - tier2_limit)
+    }

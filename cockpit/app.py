@@ -11,10 +11,57 @@ from datetime import datetime
 # Add root to path for script imports
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from scripts import ui_utils, config_utils, db_manager
+from cockpit.components import file_tree, diff_viewer
 from streamlit_code_diff import st_code_diff
 from streamlit_monaco import st_monaco
 import streamlit_antd_components as sac
 from scripts.render_prompt import render_template
+
+# Token estimation constants
+TOKEN_THRESHOLD = 100000  # Warn when context exceeds this
+CHARS_PER_TOKEN = 4  # Rough estimate
+
+def estimate_tokens(text: str) -> int:
+    """Rough token estimate based on character count."""
+    return len(text) // CHARS_PER_TOKEN if text else 0
+
+def summarize_with_gemini(content: str, content_type: str = "diff") -> str:
+    """Use Gemini API to summarize large content for context optimization.
+    
+    Args:
+        content: The content to summarize (diff or commit history)
+        content_type: Either 'diff' or 'commits'
+        
+    Returns:
+        Summarized content string
+    """
+    try:
+        from scripts.llm_strategy import get_provider
+        provider = get_provider("gemini")
+        
+        if content_type == "diff":
+            prompt = f"""Summarize this git diff into a concise overview (max 2000 chars).
+Focus on: what files changed, key modifications, and overall intent.
+
+```diff
+{content[:50000]}
+```
+
+Provide a structured summary:
+1. Files Changed (bullet list)
+2. Key Modifications (grouped by area)
+3. Overall Intent (1-2 sentences)"""
+        else:  # commit history
+            prompt = f"""Summarize these commit messages into a coherent narrative (max 1000 chars).
+Focus on: the progression of work, key milestones, and overall direction.
+
+{content[:20000]}
+
+Provide a narrative summary capturing the developer's journey."""
+        
+        return provider.call(prompt, model="gemini-2.0-flash-exp")
+    except Exception as e:
+        return f"[Summarization failed: {str(e)}]"
 
 # Page Config
 st.set_page_config(
@@ -73,6 +120,11 @@ if 'execution_result' not in st.session_state: st.session_state.execution_result
 if 'show_results' not in st.session_state: st.session_state.show_results = False
 if 'tool_choice' not in st.session_state: st.session_state.tool_choice = "GitHub Copilot CLI"
 if 'model_choice' not in st.session_state: st.session_state.model_choice = "gpt-4"
+# Summarization state
+if 'use_summarized' not in st.session_state: st.session_state.use_summarized = False
+if 'summarized_diff' not in st.session_state: st.session_state.summarized_diff = None
+if 'summarized_commits' not in st.session_state: st.session_state.summarized_commits = None
+if 'commit_search' not in st.session_state: st.session_state.commit_search = ""
 
 # --- Auto-Detection & Error Handling ---
 repos = ui_utils.list_repositories()
@@ -132,6 +184,17 @@ except (subprocess.CalledProcessError, FileNotFoundError):
     """.format(st.session_state.repo))
     st.stop()
 
+# --- HEADER ---
+with st.container():
+    h_col1, h_col2 = st.columns([0.8, 8], gap="small")
+    with h_col1:
+        if os.path.exists("cockpit/assets/logo.png"):
+            st.image("cockpit/assets/logo.png", width=72)
+        else:
+            st.markdown("<h1>🤖</h1>", unsafe_allow_html=True)
+    with h_col2:
+        st.markdown('<h1 style="margin-top:0; padding-top:10px;">Git Diff RAG <span style="font-size:0.5em; color:#8b949e; font-weight:normal;">/ Cockpit</span></h1>', unsafe_allow_html=True)
+
 # --- COMPACT TOP BAR ---
 with st.container():
     col1, col2, col3, col4 = st.columns([2, 2, 2, 0.8])
@@ -174,28 +237,94 @@ with st.container():
 # Advanced Options (Collapsed by Default)
 if st.session_state.show_advanced:
     with st.expander("🔧 Advanced Options", expanded=True):
+        # Helper function for commit display
+        def format_commit_option(commit: dict) -> str:
+            """Format commit for dropdown: 'abc1234 • Dec 23 • @author • Fix login bug'"""
+            short_hash = commit['hash'][:7]
+            date_str = commit.get('date', '').split()[0] if commit.get('date') else ''
+            try:
+                from datetime import datetime
+                date_obj = datetime.strptime(date_str, '%Y-%m-%d')
+                date_display = date_obj.strftime('%b %d')
+            except:
+                date_display = date_str[:10] if date_str else '?'
+            author = commit.get('author', 'unknown').split()[0][:10]
+            subject = commit.get('message', '')[:35]
+            if len(commit.get('message', '')) > 35:
+                subject += '...'
+            return f"{short_hash} • {date_display} • @{author} • {subject}"
+        
         adv_col1, adv_col2 = st.columns(2)
         
         with adv_col1:
             st.markdown("**Compare Against - Specific Commit**")
             target_commits = ui_utils.get_commits(repo_path, st.session_state.target)
-            target_commit_opts = ["Current HEAD"] + [c['hash'] for c in target_commits]
-            new_target_commit = st.selectbox("Target Commit", options=target_commit_opts, 
-                                           index=0 if not st.session_state.target_commit else target_commit_opts.index(st.session_state.target_commit) if st.session_state.target_commit in target_commit_opts else 0, 
-                                           label_visibility="collapsed",
-                                           key="target_commit_select")
-            st.session_state.target_commit = new_target_commit if new_target_commit != "Current HEAD" else None
+            
+            # Search filter
+            target_search = st.text_input("🔍 Filter", placeholder="hash, author, or message...", key="target_commit_search")
+            
+            # Filter commits
+            filtered_target = target_commits
+            if target_search:
+                search_lower = target_search.lower()
+                filtered_target = [c for c in target_commits if (
+                    search_lower in c['hash'].lower() or 
+                    search_lower in c.get('author', '').lower() or 
+                    search_lower in c.get('message', '').lower()
+                )]
+            
+            # Build display options
+            target_commit_opts = ["Current HEAD"] + [format_commit_option(c) for c in filtered_target]
+            label_to_hash_target = {format_commit_option(c): c['hash'] for c in filtered_target}
+            hash_to_label_target = {c['hash']: format_commit_option(c) for c in filtered_target}
+            
+            current_label = "Current HEAD"
+            if st.session_state.target_commit and st.session_state.target_commit in hash_to_label_target:
+                current_label = hash_to_label_target[st.session_state.target_commit]
+            
+            selected_label = st.selectbox("Target Commit", options=target_commit_opts,
+                index=target_commit_opts.index(current_label) if current_label in target_commit_opts else 0,
+                label_visibility="collapsed", key="target_commit_select")
+            
+            st.session_state.target_commit = label_to_hash_target.get(selected_label) if selected_label != "Current HEAD" else None
+            
+            if target_search:
+                st.caption(f"Showing {len(filtered_target)} of {len(target_commits)} commits")
         
         with adv_col2:
             if st.session_state.source != "Working Directory":
                 st.markdown("**Your Changes - Specific Commit**")
                 source_commits = ui_utils.get_commits(repo_path, st.session_state.source)
-                source_commit_opts = ["Current HEAD"] + [c['hash'] for c in source_commits]
-                new_source_commit = st.selectbox("Source Commit", options=source_commit_opts, 
-                                               index=0 if not st.session_state.source_commit else source_commit_opts.index(st.session_state.source_commit) if st.session_state.source_commit in source_commit_opts else 0, 
-                                               label_visibility="collapsed",
-                                               key="source_commit_select")
-                st.session_state.source_commit = new_source_commit if new_source_commit != "Current HEAD" else None
+                
+                # Search filter
+                source_search = st.text_input("🔍 Filter", placeholder="hash, author, or message...", key="source_commit_search")
+                
+                # Filter commits
+                filtered_source = source_commits
+                if source_search:
+                    search_lower = source_search.lower()
+                    filtered_source = [c for c in source_commits if (
+                        search_lower in c['hash'].lower() or 
+                        search_lower in c.get('author', '').lower() or 
+                        search_lower in c.get('message', '').lower()
+                    )]
+                
+                source_commit_opts = ["Current HEAD"] + [format_commit_option(c) for c in filtered_source]
+                label_to_hash_source = {format_commit_option(c): c['hash'] for c in filtered_source}
+                hash_to_label_source = {c['hash']: format_commit_option(c) for c in filtered_source}
+                
+                current_source_label = "Current HEAD"
+                if st.session_state.source_commit and st.session_state.source_commit in hash_to_label_source:
+                    current_source_label = hash_to_label_source[st.session_state.source_commit]
+                
+                selected_source = st.selectbox("Source Commit", options=source_commit_opts,
+                    index=source_commit_opts.index(current_source_label) if current_source_label in source_commit_opts else 0,
+                    label_visibility="collapsed", key="source_commit_select")
+                
+                st.session_state.source_commit = label_to_hash_source.get(selected_source) if selected_source != "Current HEAD" else None
+                
+                if source_search:
+                    st.caption(f"Showing {len(filtered_source)} of {len(source_commits)} commits")
             else:
                 st.session_state.source_commit = None
 
@@ -212,8 +341,65 @@ if changed_files:
     lines_added = total_diff.count('\n+')
     lines_removed = total_diff.count('\n-')
     st.markdown(f'<span class="status-indicator ready">🟢 {len(changed_files)} files • +{lines_added} -{lines_removed} lines</span>', unsafe_allow_html=True)
+    
+    # Token Estimation
+    estimated_tokens = estimate_tokens(total_diff)
+    if estimated_tokens > TOKEN_THRESHOLD:
+        st.warning(f"⚠️ Large diff detected: ~{estimated_tokens:,} tokens. Consider using Summarize.")
+        sum_col1, sum_col2 = st.columns([1, 3])
+        with sum_col1:
+            if st.button("⚡ Summarize", help="Use Gemini API to optimize context for large diffs"):
+                with st.spinner("Summarizing with Gemini API..."):
+                    st.session_state.summarized_diff = summarize_with_gemini(total_diff, "diff")
+                    st.session_state.use_summarized = True
+                    st.success("✅ Diff summarized")
+                    st.rerun()
+        with sum_col2:
+            if st.session_state.use_summarized:
+                st.info("📝 Using summarized diff for AI review")
+                if st.button("🔄 Reset to full diff"):
+                    st.session_state.use_summarized = False
+                    st.session_state.summarized_diff = None
+                    st.rerun()
 else:
     st.markdown('<span class="status-indicator">⚪ No changes detected</span>', unsafe_allow_html=True)
+
+# Commit History Panel
+if changed_files:
+    from scripts.git_operations import get_commits_between
+    
+    with st.expander("📝 Commit History", expanded=False):
+        try:
+            commits = get_commits_between(repo_path, actual_target, actual_source)
+            
+            if commits['total_count'] > 0:
+                st.caption(f"Showing {len(commits['tier1'])} detailed + {len(commits['tier2'])} summary of {commits['total_count']} total commits")
+                
+                # Tier 1: Full detail
+                if commits['tier1']:
+                    st.markdown("**Recent Commits**")
+                    for c in commits['tier1']:
+                        with st.container():
+                            st.markdown(f"**`{c['hash']}`** — {c['subject']}")
+                            st.caption(f"{c['author']} • {c['date']}")
+                            if c.get('body'):
+                                body_preview = c['body'][:300] + '...' if len(c['body']) > 300 else c['body']
+                                st.text(body_preview)
+                
+                # Tier 2: Compact
+                if commits['tier2']:
+                    st.markdown("---")
+                    st.markdown("**Earlier Commits**")
+                    for c in commits['tier2']:
+                        st.text(f"{c['hash']} | {c['date']} | {c['subject'][:50]}...")
+                
+                # Truncation note
+                if commits['truncated_count'] > 0:
+                    st.info(f"ℹ️ {commits['truncated_count']} older commits not shown")
+            else:
+                st.info("No commits between these refs")
+        except Exception as e:
+            st.warning(f"Could not load commit history: {e}")
 
 st.divider()
 
@@ -245,49 +431,154 @@ with tab_review:
         st.markdown('</div>', unsafe_allow_html=True)
     
     # Collapsible Prompt Customization
-    with st.expander("🧱 Customize Instructions", expanded=False):
-        cust_col1, cust_col2 = st.columns([1, 2])
+    with st.expander("🧱 Customize Instructions (Prompt Composer)", expanded=True):
+        # Layout: Tree Selector | Preview Panel
+        comp_col1, comp_col2 = st.columns([1.2, 1.8], gap="medium")
         
-        with cust_col1:
-            st.markdown("#### 📚 Prompt Library")
-            library = ui_utils.list_prompt_library()
-            recipes = [p for p in library if "recipes" in p['full_path']]
+        library = ui_utils.list_prompt_library()
+        
+        # Build Tree Items & Label Map (Pre-calculation)
+        tree_data = {}
+        label_map = {}
+        lib_lookup = {item['full_path']: item for item in library}
+        
+        for item in library:
+            folder = os.path.dirname(item['name']) or "root"
+            if "macros" in folder: continue
+            if folder not in tree_data: tree_data[folder] = []
+            tree_data[folder].append(item)
             
-            for r in recipes:
-                is_active = r['full_path'] in st.session_state.active_bundle
-                btn_label = f"✓ {r['name']}" if is_active else f"➕ {r['name']}"
-                if st.button(btn_label, key=f"rec_{r['name']}", use_container_width=True):
-                    if is_active:
-                        st.session_state.active_bundle.remove(r['full_path'])
-                    else:
-                        st.session_state.active_bundle.append(r['full_path'])
-                    st.rerun()
+        folder_order = ['recipes', 'library', 'root']
+        sorted_folders = sorted(tree_data.keys(), key=lambda x: folder_order.index(x) if x in folder_order else 99)
         
-        with cust_col2:
-            st.markdown("#### 🧱 Active Bundle")
+        sac_items = []
+        for folder in sorted_folders:
+            children = []
+            for item in tree_data[folder]:
+                desc = item.get('description')
+                
+                # Unique label logic
+                base_label = os.path.basename(item['name'])
+                label = base_label
+                counter = 1
+                while label in label_map:
+                    label = f"{base_label} ({counter})"
+                    counter += 1
+                
+                label_map[label] = item['full_path']
+                
+                desc_str = desc if desc else ""
+                children.append(sac.TreeItem(
+                    label=label,
+                    icon='file-text',
+                    description=desc_str[:57]+"..." if len(desc_str)>60 else desc_str,
+                    tooltip=desc_str
+                ))
+            
+            icon = 'folder-open' if 'recipes' in folder else 'folder'
+            sac_items.append(sac.TreeItem(
+                label=folder.title(),
+                icon=icon,
+                children=children
+            ))
+
+        # --- LEFT COLUMN: SELECTOR ---
+        with comp_col1:
+            st.markdown("##### 📚 Selection")
+            
+            # Initial Selection Mapping
+            path_to_label = {v: k for k, v in label_map.items()}
+            current_selection_labels = [path_to_label[p] for p in st.session_state.active_bundle if p in path_to_label]
+            
+            # Fallback to Multiselect for stability
+            sorted_options = sorted(list(label_map.keys()))
+            default_sel = [l for l in current_selection_labels if l in sorted_options]
+            selected_labels = st.multiselect("Select Recipes", sorted_options, default=default_sel, key="prompt_multiselect")
+            
+            # Update State
+            valid_selection = [label_map[lbl] for lbl in selected_labels if lbl in label_map]
+            
+            if valid_selection != st.session_state.active_bundle:
+                st.session_state.active_bundle = valid_selection
+                st.rerun()
+
+        # --- RIGHT COLUMN: PREVIEW ---
+        with comp_col2:
+            st.markdown("##### 🔮 Execution Plan")
+            
             if not st.session_state.active_bundle:
-                st.info("No custom prompts selected. Default review will be used.")
+                 st.info("👈 Select detailed recipes from the library to build your analysis strategy.")
+                 default_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "prompts", "recipes", "standard_pr_review.md")
+                 if os.path.exists(default_path) and default_path not in st.session_state.active_bundle:
+                     st.caption("ℹ️ If empty, 'Standard PR Review' applies by default.")
             else:
-                for block_path in st.session_state.active_bundle:
-                    name = os.path.basename(block_path)
-                    st.markdown(f'<div class="lego-block"><span>{name}</span></div>', unsafe_allow_html=True)
-                if st.button("🗑️ Clear All", use_container_width=True):
-                    st.session_state.active_bundle = []
-                    st.rerun()
-    
+                 st.caption(f"The following **{len(st.session_state.active_bundle)} recipes** will be executed in order:")
+                 
+                 for i, path in enumerate(st.session_state.active_bundle):
+                     item = lib_lookup.get(path)
+                     fname = os.path.basename(path)
+                     if item:
+                         desc = item.get('description', 'No description available.')
+                         tags = item.get('tags', [])
+                     else:
+                         desc = "Unknown recipe"
+                         tags = []
+                     
+                     tags_html = "".join([f'<span class="lego-tag">{t}</span>' for t in tags])
+                     
+                     st.markdown(f"""
+                     <div style="background: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 12px; margin-bottom: 8px; display: flex; flex-direction: column;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+                            <span style="font-weight: 600; color: #58a6ff;">{i+1}. {fname}</span>
+                            <span style="font-size: 0.8em; color: #8b949e; font-family: monospace;">{len(tags)} tags</span>
+                        </div>
+                        <div style="font-size: 0.9em; color: #c9d1d9; margin-bottom: 8px;">{desc}</div>
+                        <div>{tags_html}</div>
+                     </div>
+                     """, unsafe_allow_html=True)
+
     # Tool Selection
     with st.expander("⚙️ AI Tool Configuration", expanded=False):
-        new_tool = st.selectbox("AI Provider", ["GitHub Copilot CLI", "Gemini API"], 
-                               index=0 if st.session_state.tool_choice == "GitHub Copilot CLI" else 1)
+        new_tool = st.selectbox("AI Provider", ["GitHub Copilot CLI", "Gemini API", "Gemini CLI"], 
+                               index=0 if st.session_state.tool_choice == "GitHub Copilot CLI" else (1 if st.session_state.tool_choice == "Gemini API" else 2))
         if new_tool != st.session_state.tool_choice:
             st.session_state.tool_choice = new_tool
             st.rerun()
         
         if st.session_state.tool_choice == "Gemini API":
-            default_models = ["gemini-2.0-flash-exp", "gemini-1.5-pro", "gemini-1.5-flash"]
-            if 'available_models' not in st.session_state:
-                st.session_state.available_models = default_models
-            new_model = st.selectbox("Model", st.session_state.available_models, index=0)
+            try:
+                from scripts.llm_strategy import get_provider
+                provider = get_provider("gemini")
+                available_models = provider.list_models()
+            except Exception:
+                available_models = ["gemini-2.0-flash-exp", "gemini-1.5-pro", "gemini-1.5-flash"]
+            
+            if 'available_models' not in st.session_state or st.session_state.get('last_tool_choice') != st.session_state.tool_choice:
+                st.session_state.available_models = available_models
+                st.session_state.last_tool_choice = st.session_state.tool_choice
+            
+            current_index = 0
+            if st.session_state.model_choice in st.session_state.available_models:
+                current_index = st.session_state.available_models.index(st.session_state.model_choice)
+            new_model = st.selectbox("Model", st.session_state.available_models, index=current_index)
+            if new_model != st.session_state.model_choice:
+                st.session_state.model_choice = new_model
+        elif st.session_state.tool_choice == "Gemini CLI":
+            try:
+                from scripts.llm_strategy import get_provider
+                provider = get_provider("gemini-cli")
+                available_models = provider.list_models()
+            except Exception:
+                available_models = ["gemini-2.5-pro", "gemini-2.0-flash", "gemini-2.5-flash", "gemini-3-flash-preview"]
+            
+            if 'available_models' not in st.session_state or st.session_state.get('last_tool_choice') != st.session_state.tool_choice:
+                st.session_state.available_models = available_models
+                st.session_state.last_tool_choice = st.session_state.tool_choice
+            
+            current_index = 0
+            if st.session_state.model_choice in st.session_state.available_models:
+                current_index = st.session_state.available_models.index(st.session_state.model_choice)
+            new_model = st.selectbox("Model", st.session_state.available_models, index=current_index)
             if new_model != st.session_state.model_choice:
                 st.session_state.model_choice = new_model
         else:
@@ -296,170 +587,84 @@ with tab_review:
     
     st.divider()
     
-    r_col1, r_col2 = st.columns([1, 3])
-    
-    with r_col1:
-        st.markdown("### 📂 Files")
-        if changed_files:
-            # Filter Input
-            filter_text = st.text_input("Filter files", placeholder="e.g. .py", label_visibility="collapsed")
-            
-            # 1. Filter by text
-            text_filtered = [f for f in changed_files if filter_text.lower() in f.lower()] if filter_text else changed_files
-            
-            # 2. Filter by content (remove identicals)
-            final_files = []
-            # We use a spinner because this might take a moment for many files
-            with st.spinner("Verifying actual changes..."):
-                for f in text_filtered:
-                    b = ui_utils.get_file_content(repo_path, actual_target, f)
-                    a = ui_utils.get_file_content(repo_path, actual_source, f)
-                    if b != a:
-                        final_files.append(f)
-            
-            if not final_files:
-                st.success("No content changes detected (files may differ only by line endings).")
-
-            # Build Tree Structure & Label Map
-            tree_items = []
-            label_map = {} # label -> full_path
-
-            def get_unique_label(base_label):
-                label = base_label
-                counter = 0
-                while label in label_map:
-                    counter += 1
-                    label = base_label + "\u200b" * counter
-                return label
-
-            def add_to_tree(nodes, parts, full_path):
-                part = parts[0]
-                is_file = len(parts) == 1
-                
-                # Find existing node (by visual label, ignoring ZWS for matching parent folders)
-                existing_node = None
-                for node in nodes:
-                    # Strip ZWS to match folder names correctly
-                    if node.label.rstrip('\u200b') == part and ((is_file and node.icon == 'file-code') or (not is_file and node.icon == 'folder')):
-                        existing_node = node
-                        break
-                
-                if existing_node:
-                    if is_file:
-                        pass
-                    else:
-                        add_to_tree(existing_node.children, parts[1:], full_path)
-                else:
-                    # Create new node
-                    if is_file:
-                        unique_label = get_unique_label(part)
-                        new_node = sac.TreeItem(unique_label, icon='file-code')
-                        nodes.append(new_node)
-                        label_map[unique_label] = full_path
-                    else:
-                        # Folders also need unique labels in the map if we want to be safe, 
-                        # but usually we don't select folders. 
-                        # However, we need to store them in the tree.
-                        # We don't add folders to label_map for file selection, 
-                        # but we need to ensure their labels are unique in the tree if they are siblings?
-                        # Actually, sibling folders with same name are impossible.
-                        # So folder labels are unique among siblings.
-                        new_node = sac.TreeItem(part, icon='folder', children=[])
-                        nodes.append(new_node)
-                        add_to_tree(new_node.children, parts[1:], full_path)
-
-            for f in sorted(final_files):
-                parts = f.split('/')
-                add_to_tree(tree_items, parts, f)
-
-            # Render SAC Tree
-            selected_label = sac.tree(
-                items=tree_items, 
-                label='', 
-                align='start', 
-                size='sm', 
-                show_line=True, 
-                icon='folder',
-                open_all=True,
-                return_index=False, # Use labels
-                key=f'file_tree_{filter_text}_{len(final_files)}'
-            )
-            
-            # Handle Selection
-            if selected_label:
-                # sac returns a list if multiple, or string if single?
-                # Documentation says: returns list of selected indexes or labels.
-                # Wait, let's be safe.
-                target_label = None
-                if isinstance(selected_label, list) and len(selected_label) > 0:
-                    target_label = selected_label[0]
-                elif isinstance(selected_label, str):
-                    target_label = selected_label
-                
-                if target_label and target_label in label_map:
-                    full_path = label_map[target_label]
-                    if full_path != st.session_state.selected_file:
-                        st.session_state.selected_file = full_path
-                        st.rerun()
-                elif target_label:
-                    # It might be a folder or unmapped item
-                    pass
-        else:
-            st.success("No changes detected.")
-
-    with r_col2:
-        if st.session_state.selected_file:
-            st.markdown(f"### 📝 Diff: `{st.session_state.selected_file}`")
-            st.caption(f"Comparing: `{actual_target}` ↔ `{actual_source}`")
-            before = ui_utils.get_file_content(repo_path, actual_target, st.session_state.selected_file)
-            after = ui_utils.get_file_content(repo_path, actual_source, st.session_state.selected_file)
-            
-            # Check if content is identical after normalization
-            if before == after:
-                st.info("File content is identical (ignoring line endings).")
-                with st.expander("Show Content"):
-                    st.code(after)
-            else:
-                st_code_diff(before, after)
-            
-            # Context Tower (Findings) moved here for relevance
-            findings = ui_utils.get_findings(repo_path, actual_target, actual_source, st.session_state.target_commit, st.session_state.source_commit)
-            if findings:
-                with st.expander(f"🚨 Rule Findings ({len(findings)})", expanded=False):
-                    for f in findings:
-                        sev = "high" if "security" in f['message'].lower() or "deprecated" in f['message'].lower() else "med"
-                        st.markdown(f'<div class="finding-alert finding-{sev}"><b>{f["type"].upper()}</b>: {f["message"]}</div>', unsafe_allow_html=True)
-        else:
-            st.info("Select a file from the tree to view the diff.")
-    
     # Execution Status (if running)
     if st.session_state.is_executing:
-        st.divider()
-        st.markdown("### � AI Review In Progress")
-        
+        st.markdown("### 🚀 AI Review In Progress")
+
         with st.status("Running AI Review...", expanded=True) as status:
             try:
+                # Track execution time
+                start_time = time.time()
+                
                 # Step 1: Fetch diff
                 st.write("📥 **Step 1/5:** Fetching diff from repository...")
-                diff_content = ui_utils.get_diff(repo_path, actual_target, actual_source, 
-                                                target_commit=st.session_state.target_commit, 
-                                                source_commit=st.session_state.source_commit)
-                st.write(f"   ✓ Fetched {len(diff_content)} characters of changes")
                 
+                # Check for summarized override
+                if st.session_state.use_summarized and st.session_state.summarized_diff:
+                    diff_content = st.session_state.summarized_diff
+                    st.info("ℹ️ Using pre-summarized diff for context optimization")
+                else:
+                    diff_content = ui_utils.get_diff(repo_path, actual_target, actual_source, 
+                                                    target_commit=st.session_state.target_commit, 
+                                                    source_commit=st.session_state.source_commit)
+                
+                elapsed = time.time() - start_time
+                st.write(f"   ✓ Fetched {len(diff_content)} chars of changes ({elapsed:.2f}s)")
+                st.session_state.execution_times['fetch_diff'] = elapsed
+                start_time = time.time()
+                
+                # Fetch Commit History for Context
+                commit_history = {}
+                try:
+                    from scripts.git_operations import get_commits_between
+                    commit_history = get_commits_between(
+                        repo_path, 
+                        actual_target, 
+                        actual_source,
+                        tier1_limit=10,
+                        tier2_limit=50
+                    )
+                    st.write(f"   ✓ Loaded {commit_history.get('total_count', 0)} commits for context")
+                except Exception as e:
+                    st.warning(f"   ⚠️ Failed to load commit history: {e}")
+
                 # Step 2: Prepare prompt
                 st.write("🧱 **Step 2/5:** Building review prompt...")
-                full_prompt = f"# CODE REVIEW REQUEST\n\n## DIFF\n\n```diff\n{diff_content}\n```\n\n"
                 
-                for p in st.session_state.active_bundle:
-                    part = render_template(p, diff_content, repo_name=st.session_state.repo, inject_diff_content=False)
-                    full_prompt += f"\n---\n\n{part}"
+                # Create output directory early for template rendering
+                timestamp = datetime.now().strftime("%Y%m%dT%H%M%S")
+                out_folder = f"output/{timestamp}-{st.session_state.repo}-review"
+                
+                # We construct the prompt manually here to support multiple recipes
+                # But we must ensure the macros work
+                
+                full_prompt = ""
+                # Inject diff at the top for some recipes, or let macros handle it?
+                # The Orchestrator uses render_prompt_with_context. 
+                # Here we loop through active_bundle (recipes).
+                
+                for p_path in st.session_state.active_bundle:
+                    # Pass context data to render_template
+                    part = render_template(
+                        p_path, 
+                        diff_content, 
+                        repo_name=st.session_state.repo, 
+                        inject_diff_content=False, # Recipes usually include {{ DIFF_CONTENT }} explicitly
+                        commit_history_data=commit_history,
+                        target_ref=actual_target,
+                        source_ref=actual_source,
+                        OUTPUT_DIR=out_folder
+                    )
+                    full_prompt += part + "\n\n---\n\n"
+                
+                # Fallback if no recipe includes DIFF_CONTENT
+                if "{{ DIFF_CONTENT }}" not in full_prompt and "diff" not in full_prompt.lower()[:200]:
+                     full_prompt += f"\n\n## DIFF\n\n```diff\n{diff_content}\n```"
                 
                 st.write(f"   ✓ Prompt ready ({len(st.session_state.active_bundle)} instruction(s) included)")
                 
                 # Step 3: Save artifacts
                 st.write("💾 **Step 3/5:** Saving artifacts...")
-                timestamp = datetime.now().strftime("%Y%m%dT%H%M%S")
-                out_folder = f"output/{timestamp}-{st.session_state.repo}-review"
                 os.makedirs(out_folder, exist_ok=True)
                 
                 with open(f"{out_folder}/prompt.txt", "w") as f:
@@ -478,6 +683,7 @@ with tab_review:
                 
                 provider_map = {
                     "Gemini API": "gemini",
+                    "Gemini CLI": "gemini-cli",
                     "GitHub Copilot CLI": "gh-copilot"
                 }
                 provider_name = provider_map.get(st.session_state.tool_choice, "gemini")
@@ -486,6 +692,8 @@ with tab_review:
                 # Call the provider
                 if provider_name == "gh-copilot":
                     response = provider.call(full_prompt, allow_tools=['shell(git)', 'write'], timeout=300)
+                elif provider_name == "gemini-cli":
+                    response = provider.call(full_prompt, model=st.session_state.model_choice, allow_tools=['shell(git)', 'write'], timeout=300)
                 else:
                     response = provider.call(full_prompt, model=st.session_state.model_choice)
                 
@@ -531,26 +739,16 @@ with tab_review:
                 st.session_state.is_executing = False
                 st.session_state.current_step = None
     
+    r_col1, r_col2 = st.columns([1, 3])
+    
+    with r_col1:
+        file_tree.render_file_tree(repo_path, actual_target, actual_source, changed_files)
+
+    with r_col2:
+        diff_viewer.render_diff_viewer(repo_path, actual_target, actual_source)
+    
     # Display Results (after execution completes)
-    if st.session_state.show_results and st.session_state.execution_result:
-        st.divider()
-        
-        result_col1, result_col2 = st.columns([3, 1])
-        with result_col1:
-            st.markdown("### ✅ AI Review Results")
-        with result_col2:
-            if st.button("✖️ Dismiss", use_container_width=True):
-                st.session_state.show_results = False
-                st.session_state.execution_result = None
-                st.rerun()
-        
-        # Display the review in a container for easy copying
-        st.markdown("---")
-        st.markdown(st.session_state.execution_result)
-        
-        # Show raw markdown in an expander for easy copying
-        with st.expander("📋 Copy Raw Markdown"):
-            st.code(st.session_state.execution_result, language="markdown")
+    diff_viewer.render_execution_results()
 
 # --- TAB 2: HISTORY ---
 

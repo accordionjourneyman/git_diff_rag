@@ -40,7 +40,9 @@ def cmd_analyze(args: argparse.Namespace) -> int:
         dry_run=args.dry_run,
         output_format=args.output_format,
         language=args.language,
-        debug=args.debug
+        debug=args.debug,
+        llm=getattr(args, 'llm', None),
+        model=getattr(args, 'model', None)
     )
     
     try:
@@ -111,6 +113,24 @@ def cmd_list_models(args: argparse.Namespace) -> int:
                 print(f"  • {model}")
         else:
             print("  ⚠️  No models found (check GEMINI_API_KEY)")
+    except Exception as e:
+        print(f"  ❌ Error: {e}")
+    
+    print()
+    
+    # Gemini CLI models
+    print("🔷 Gemini CLI:")
+    try:
+        from scripts import call_gemini_cli
+        if call_gemini_cli.is_gemini_cli_installed():
+            models = call_gemini_cli.get_available_models()
+            for model in models:
+                default_marker = " (default)" if model == call_gemini_cli.DEFAULT_MODEL else ""
+                print(f"  • {model}{default_marker}")
+            print(f"  ℹ️  Model selection via -m/--model flag")
+        else:
+            print("  ❌ Gemini CLI not installed")
+            print("  ℹ️  Install from: https://github.com/google/gemini-cli")
     except Exception as e:
         print(f"  ❌ Error: {e}")
     
@@ -306,6 +326,9 @@ For more information: https://github.com/your-org/git_diff_rag
     analyze_parser.add_argument('--source', help='Source ref for diff (tip)')
     analyze_parser.add_argument('--commit', help='Analyze specific commit')
     analyze_parser.add_argument('--language', help='Force specific language context')
+    analyze_parser.add_argument('--llm', choices=['gemini', 'gemini-cli', 'gh-copilot', 'copilot'], 
+                               help='LLM provider to use (overrides config)')
+    analyze_parser.add_argument('--model', help='Specific model to use (provider-dependent)')
     analyze_parser.add_argument('--dry-run', '-n', action='store_true', help='Validate without calling LLM')
     analyze_parser.add_argument('--output-format', '-o', choices=['markdown', 'json'], default='markdown')
     analyze_parser.add_argument('--debug', action='store_true', help='Enable debug output')
@@ -321,6 +344,9 @@ For more information: https://github.com/your-org/git_diff_rag
     explain_parser.add_argument('--target', help='Target ref for diff')
     explain_parser.add_argument('--source', help='Source ref for diff')
     explain_parser.add_argument('--commit', help='Analyze specific commit')
+    explain_parser.add_argument('--llm', choices=['gemini', 'gemini-cli', 'gh-copilot', 'copilot'], 
+                               help='LLM provider to use (overrides config)')
+    explain_parser.add_argument('--model', help='Specific model to use (provider-dependent)')
     explain_parser.add_argument('--dry-run', '-n', action='store_true', help='Validate without calling LLM')
     explain_parser.add_argument('--debug', action='store_true', help='Enable debug output')
     explain_parser.set_defaults(func=cmd_explain, workflow='explain_diff', output_format='markdown', language=None)

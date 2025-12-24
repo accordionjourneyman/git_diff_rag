@@ -2,9 +2,29 @@
 
 All notable changes to this project will be documented in this file.
 
-## [2.2.0] - 2025-12-23 - Intelligence Loop & Recipe Expansion
+## [2.3.0] - 2025-12-23 - Cockpit UX & Auditability
 
 ### Features
+
+- **Tiered Commit History**: Intelligent context retrieval that fetches full details for recent commits and summaries for older ones, preventing token overflow.
+- **Immutable Configuration**: Core `WorkflowConfig` is now frozen and versioned with JSON snapshots in the database for complete job auditability and reproducibility.
+- **Diff Summarization**: Integrated Gemini-powered summarization for large diffs (>100k tokens) with a new "⚡ Summarize" button in the Cockpit.
+- **Enhanced Commit Selectors**: Dropdowns now display full commit metadata (Hash, Date, Author, Subject) and support fuzzy search.
+
+### Improvements
+
+- **Cockpit UI**: Added collapsible "Commit History" panel and step-by-step execution timing display.
+- **Performance**: Optimized `git log` parsing for metadata retrieval.
+- **Reliability**: Fixed indentation bugs in the execution loop and improved error handling for context loading.
+
+### Fixes
+
+- **Commit Metadata**: Resolved issue where commit author and date were missing in the selector dropdown.
+
+---
+
+### Features
+
 - **New Recipes**: Added `architectural_review`, `github_readiness`, and `test_coverage_advisor` recipes to enhance code quality and documentation practices.
 - **Critic Verification**: Implemented a critic verification pass to cross-reference code changes with previous analyses and external signals.
 - **Session Summarizer**: Added a summarizer for extracting lessons learned from AI agent sessions, improving long-term memory for repository insights.
@@ -12,16 +32,19 @@ All notable changes to this project will be documented in this file.
 - **Repo Config Utils**: Created utility functions for managing repository configurations and workflows.
 
 ### Testing
+
 - **Comprehensive Tests**: Developed comprehensive test cases for signal processing, documentation loading, and intelligence loop functionalities.
 
 ## [2.1.0] - 2025-12-21 - Context Awareness & Smart Caching
 
 ### Features
+
 - **Context Injection**: The tool now automatically fetches the last 3 analyses for the target repository and injects them into the prompt. This allows the LLM to maintain consistency and avoid repeating past advice.
 - **Smart Caching**: The caching mechanism has been upgraded to ignore dynamic context history. Cache keys are now calculated from a "Base Prompt" (Template + Diff only), ensuring that growing history doesn't invalidate the cache for identical code changes.
 - **Database Migration**: The SQLite schema now includes a `repo_name` column to support repository-specific context retrieval. Existing databases are automatically migrated.
 
 ### Improvements
+
 - **Prompt Tone**: Updated `role_definition.md` and `style_constructive.md` to enforce a more concise, professional tone and avoid conversational filler.
 - **Runtime Robustness**: `New-Bundle.sh` now robustly detects and uses the correct Python interpreter from the virtual environment.
 - **CLI**: Added support for custom commit ranges via `--target`, `--source`, and `--commit` flags.
@@ -137,14 +160,14 @@ Original `pr_checker` tool with Azure DevOps integration and Copilot-focused PR 
 - **Token Guard**: Automatically prunes context (switching to `git diff --stat`) if the token limit is exceeded.
 - **Prompt Library**: Modular Jinja2 templates in `prompts/library/` (Security, Quality, Ops) and `prompts/macros/`.
 - **New Workflows**:
-    - `comprehensive`: 360-degree review using the prompt library.
-    - `agentic_map`: Generates a structured JSON map of changes.
-    - `explain_diff`: Simple explanation for non-technical stakeholders.
+  - `comprehensive`: 360-degree review using the prompt library.
+  - `agentic_map`: Generates a structured JSON map of changes.
+  - `explain_diff`: Simple explanation for non-technical stakeholders.
 - **CLI Enhancements**:
-    - `--dry-run`: Validates templates, checks tokens, and scans for secrets without calling the API.
-    - `--output-format`: Toggle between `markdown` and `json`.
-    - `scripts/explain.sh`: Wrapper for the explain workflow.
-    - `scripts/run_demo.sh`: Comprehensive demo script.
+  - `--dry-run`: Validates templates, checks tokens, and scans for secrets without calling the API.
+  - `--output-format`: Toggle between `markdown` and `json`.
+  - `scripts/explain.sh`: Wrapper for the explain workflow.
+  - `scripts/run_demo.sh`: Comprehensive demo script.
 - **Secret Scanning**: Pre-flight regex scan for potential secrets in the diff.
 
 ### Changed

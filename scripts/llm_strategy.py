@@ -87,12 +87,77 @@ class GeminiProvider(LLMProvider):
         return "gemini-2.0-flash-exp"
     
     def list_models(self) -> list[str]:
-        """List available Gemini models."""
-        return [
-            "gemini-2.0-flash-exp",
-            "gemini-1.5-pro",
-            "gemini-1.5-flash"
-        ]
+        """List available Gemini models from the SDK."""
+        try:
+            from scripts import call_gemini
+            client = call_gemini.get_client()
+            return call_gemini.list_models(client)
+        except Exception as e:
+            logger.warning(f"Failed to fetch Gemini models from SDK: {e}")
+            # Fallback to hardcoded list
+            return [
+                "gemini-2.0-flash-exp",
+                "gemini-1.5-pro",
+                "gemini-1.5-flash",
+                "gemini-pro"
+            ]
+
+
+class GeminiCLIProvider(LLMProvider):
+    """Google Gemini CLI provider."""
+    
+    def call(
+        self,
+        prompt: str,
+        allow_tools: Optional[list[str]] = None,
+        deny_tools: Optional[list[str]] = None,
+        allow_all_tools: bool = False,
+        timeout: int = 300,
+        **kwargs
+    ) -> str:
+        """Call Google Gemini CLI.
+        
+        Args:
+            prompt: The prompt to send
+            allow_tools: List of tools to allow without approval
+            deny_tools: List of tools to deny
+            allow_all_tools: If True, allow all tools without approval
+            timeout: Timeout in seconds
+            **kwargs: Additional parameters (model, etc.)
+            
+        Returns:
+            Gemini CLI's response text
+        """
+        from scripts import call_gemini_cli
+        
+        model = kwargs.get('model')
+        return call_gemini_cli.call_gemini_cli(
+            prompt=prompt,
+            model=model,
+            allow_tools=allow_tools,
+            deny_tools=deny_tools,
+            allow_all_tools=allow_all_tools,
+            timeout=timeout
+        )
+    
+    def is_available(self) -> bool:
+        """Check if Gemini CLI is installed and authenticated."""
+        from scripts import call_gemini_cli
+        
+        return (
+            call_gemini_cli.is_gemini_cli_installed() and
+            call_gemini_cli.is_gemini_cli_authenticated()
+        )
+    
+    def get_default_model(self) -> str:
+        """Get default Gemini CLI model."""
+        return "gemini-2.5-pro"
+    
+    def list_models(self) -> list[str]:
+        """List available Gemini CLI models."""
+        from scripts import call_gemini_cli
+        
+        return call_gemini_cli.get_available_models()
 
 
 class CopilotCLIProvider(LLMProvider):
@@ -136,7 +201,7 @@ class CopilotCLIProvider(LLMProvider):
         
         return (
             call_copilot_cli.is_copilot_installed() and
-            call_copilot_cli.is_copilot_authenticated()
+            call_copilot_cli.check_authentication()
         )
     
     def get_default_model(self) -> str:
@@ -198,6 +263,7 @@ class ManualCopilotProvider(LLMProvider):
 # Provider Registry
 PROVIDERS: Dict[str, type[LLMProvider]] = {
     "gemini": GeminiProvider,
+    "gemini-cli": GeminiCLIProvider,
     "gh-copilot": CopilotCLIProvider,
     "copilot": ManualCopilotProvider,
 }

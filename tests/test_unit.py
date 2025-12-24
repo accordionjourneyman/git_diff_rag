@@ -93,4 +93,4 @@ class TestPromptRendering:
         cmd = [sys.executable, script, str(template), str(diff), "myrepo"]
         result = subprocess.run(cmd, capture_output=True, text=True)
         assert result.returncode == 1
-        assert "Template requires missing vars" in result.stdout
+        assert "'MISSING_VAR' is undefined" in result.stdout
